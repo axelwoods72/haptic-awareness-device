@@ -50,8 +50,10 @@ esp_err_t imu_driver_init(void) {
 
   // Wake up MPU6050 - it powers on in sleep mode.
   // Write 0x00 to PWR_MGMT_1 (register 0x6B) to clear the SLEEP bit.
-  uint8_t wake_cmd[2] = {0x68, 0x00};
-  return i2c_master_transmit(mpu6050_handle, wake_cmd, sizeof(wake_cmd), 100);
+  uint8_t wake_cmd[2] = {0x6B, 0x00};
+  err = i2c_master_transmit(mpu6050_handle, wake_cmd, sizeof(wake_cmd), 100);
+  if (err != ESP_OK)
+    return err;
 
   // Add device - MMC5603 magnetometer
   i2c_device_config_t dev2_config = {
@@ -83,6 +85,8 @@ esp_err_t imu_driver_init(void) {
       i2c_master_transmit(mmc5603_handle, cmm_en_cmd, sizeof(cmm_en_cmd), 100);
   if (err != ESP_OK)
     return err;
+
+  return ESP_OK;
 }
 
 esp_err_t imu_driver_read(imu_data_t *out) {
@@ -120,17 +124,15 @@ esp_err_t imu_driver_read(imu_data_t *out) {
   uint8_t mmc_buf[9];
 
   // Read data into buffer
-  esp_err_t err2 = i2c_master_transmit_receive(mmc5603_handle, &mmc_reg, 1,
-                                               mmc_buf, sizeof(mmc_buf), 100);
-  if (err2 != ESP_OK)
-    return err2;
+  err = i2c_master_transmit_receive(mmc5603_handle, &mmc_reg, 1, mmc_buf,
+                                    sizeof(mmc_buf), 100);
+  if (err != ESP_OK)
+    return err;
 
   // Get data from buffer
   uint32_t raw_mx = (mmc_buf[0] << 12) | (mmc_buf[1] << 4) | (mmc_buf[6] >> 4);
-  uint32_t raw_my = ((uint32_t)mmc_buf[2] << 12) | ((uint32_t)mmc_buf[3] << 4) |
-                    (mmc_buf[7] >> 4);
-  uint32_t raw_mz = ((uint32_t)mmc_buf[4] << 12) | ((uint32_t)mmc_buf[5] << 4) |
-                    (mmc_buf[8] >> 4);
+  uint32_t raw_my = (mmc_buf[2] << 12) | (mmc_buf[3] << 4) | (mmc_buf[7] >> 4);
+  uint32_t raw_mz = (mmc_buf[4] << 12) | (mmc_buf[5] << 4) | (mmc_buf[8] >> 4);
 
   // Convert ADC to mG
   out->mag_x = ((int32_t)raw_mx - 524288) * 0.0625f;
