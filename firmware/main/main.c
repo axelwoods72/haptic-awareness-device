@@ -27,13 +27,15 @@ void app_main(void) {
     } else {
       ESP_LOGI(TAG,
                "accel: %.3f %.3f %.3f g | gyro: %.2f %.2f %.2f deg/s | mag: "
-               "%.1f %.1f %.1f mG ",
+               "%.1f %.1f %.1f mG \n",
                imu_data.accel_x, imu_data.accel_y, imu_data.accel_z,
                imu_data.gyro_x, imu_data.gyro_y, imu_data.gyro_z,
                imu_data.mag_x, imu_data.mag_y, imu_data.mag_z);
       complementary_filter_update(&imu_data, &orientation);
       ESP_LOGI(TAG, "pitch: %.2f deg | roll: %.2f deg | yaw: %.2f deg ",
                orientation.pitch, orientation.roll, orientation.yaw);
+      printf("ORIENT,%.2f,%.2f,%.2f\n", orientation.roll, orientation.pitch,
+             orientation.yaw);
     }
     vTaskDelay(pdMS_TO_TICKS(100));
   }
