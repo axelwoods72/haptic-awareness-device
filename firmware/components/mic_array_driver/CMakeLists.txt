@@ -1,5 +1,5 @@
 idf_component_register(
     SRC_DIRS "src"
     INCLUDE_DIRS "inc"
-    PRIV_REQUIRES esp_driver_i2s
+    PRIV_REQUIRES esp_driver_i2s board_config freertos
 )

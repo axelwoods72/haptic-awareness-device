@@ -1,6 +1,7 @@
-#include "mic_driver.h"
-#include "esp_err.h"
 #include "driver/i2s_std.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "mic_driver.h"
 #include "gpio.h"
 
 static i2s_chan_handle_t rx0_handle;

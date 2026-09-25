@@ -5,6 +5,8 @@
 #include "imu_driver.h"
 #include "mic_driver.h"
 
+void mic_task (void* pv);
+
 static const char *TAG = "main";
 
 void app_main(void) {
@@ -42,10 +44,10 @@ void mic_task (void* pv) {
 
   while (1) {
     int32_t buf0[MIC_FRAME_SAMPLES], buf1[MIC_FRAME_SAMPLES], buf2[MIC_FRAME_SAMPLES];
-    size_t* bytes_read_stereo, bytes_read_mono;
+    size_t bytes_read_stereo, bytes_read_mono;
 
-    err = mic_driver_read_stereo(buf0, buf1, bytes_read_stereo);
-    err = mic_driver_read_mono(buf2, bytes_read_mono);
+    err = mic_driver_read_stereo(buf0, buf1, &bytes_read_stereo);
+    err = mic_driver_read_mono(buf2, &bytes_read_mono);
 
     size_t expected_bytes = MIC_FRAME_SAMPLES * sizeof(int32_t);
 
@@ -58,8 +60,8 @@ void mic_task (void* pv) {
     int64_t sum0 = 0;
     int32_t min1 = INT32_MAX, max1 = INT32_MIN;
     int64_t sum1 = 0;
-    int32_t min1 = INT32_MAX, max1 = INT32_MIN;
-    int64_t sum1 = 0;
+    int32_t min2 = INT32_MAX, max2 = INT32_MIN;
+    int64_t sum2 = 0;
 
     for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
       int32_t s0 = buf0[i] >> 8;
