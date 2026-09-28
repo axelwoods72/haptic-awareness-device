@@ -26,7 +26,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 # --- Configuration -----------------------------------------------------
 
-SERIAL_PORT = "/dev/cu.usbmodemXXXX"  # <-- change this to your board's port
+SERIAL_PORT = "/dev/cu.usbserial-0001"  # <-- change this to your board's port
 BAUD_RATE = 115200
 
 # --- Serial reading (runs in a background thread) -----------------------
@@ -68,7 +68,7 @@ def serial_reader():
 
 # A flat rectangular box, roughly board-shaped, centered at the origin.
 # x = length, y = width, z = height (thickness).
-L, W, H = 2.0, 1.2, 0.3
+L, W, H = 1.2, 2.0, 0.3
 vertices = np.array(
     [
         [-L / 2, -W / 2, -H / 2],

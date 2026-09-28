@@ -3,8 +3,8 @@
 #include "esp_err.h"
 #include "hal/i2c_types.h"
 
-#define I2C_SDA_PIN 8
-#define I2C_SCL_PIN 9
+#define I2C_SDA_PIN 21
+#define I2C_SCL_PIN 22
 #define MPU6050_ADDR 0x68
 #define MMC5603_ADDR 0x30
 
