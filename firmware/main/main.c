@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 #include "imu_driver.h"
 #include "mic_driver.h"
+#include "esp_dsp.h"
 
 void mic_task (void* pv);
 
@@ -56,31 +57,46 @@ void mic_task (void* pv) {
         expected_bytes, bytes_read_stereo / 2, bytes_read_stereo / 2, bytes_read_mono);
     }
 
-    int32_t min0 = INT32_MAX, max0 = INT32_MIN;
-    int64_t sum0 = 0;
-    int32_t min1 = INT32_MAX, max1 = INT32_MIN;
-    int64_t sum1 = 0;
-    int32_t min2 = INT32_MAX, max2 = INT32_MIN;
-    int64_t sum2 = 0;
+    // GCC-PHAT TDOA 
+    // 1. window each buffer to reduce spectral leakage
+    float window0[MIC_FRAME_SAMPLES], window1[MIC_FRAME_SAMPLES], window2[MIC_FRAME_SAMPLES];
+    hann_window(buf0, buf1, buf2, window0, window1, window2, bytes_read_stereo, bytes_read_mono);
 
-    for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
-      int32_t s0 = buf0[i] >> 8;
-      if (s0 < min0) min0 = s0;
-      if (s0 > max0) max0 = s0;
-      sum0 += s0;
-      
-      int32_t s1 = buf1[i] >> 8;
-      if (s1 < min1) min1 = s1;
-      if (s1 > max1) max1 = s1;
-      sum1 += s1;
-
-      int32_t s2 = buf2[i] >> 8;
-      if (s2 < min2) min2 = s2;
-      if (s2 > max2) max2 = s2;
-      sum2 += s2;
+    for (int i = 0; i < (int) bytes_read_stereo; i++) {
+      float hann_mult = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (MIC_FRAME_SAMPLES - 1)));
+      window0[i] = (float)buf0[i] * hann_mult;
+      window1[i] = (float)buf1[i] * hann_mult;
     }
-    ESP_LOGI(TAG, "mic0: min=%ld max=%ld mean=%lld", (long)min0, (long)max0, sum0 / MIC_FRAME_SAMPLES);
-    ESP_LOGI(TAG, "mic1: min=%ld max=%ld mean=%lld", (long)min1, (long)max1, sum1 / MIC_FRAME_SAMPLES);
-    ESP_LOGI(TAG, "mic2: min=%ld max=%ld mean=%lld", (long)min2, (long)max2, sum2 / MIC_FRAME_SAMPLES);
+    for (int i = 0; i < (int) bytes_read_stereo; i++) {
+      float hann_mult = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (MIC_FRAME_SAMPLES - 1)));
+      window2[i] = (float)buf2[i] * hann_mult;
+    }
+
+    // int32_t min0 = INT32_MAX, max0 = INT32_MIN;
+    // int64_t sum0 = 0;
+    // int32_t min1 = INT32_MAX, max1 = INT32_MIN;
+    // int64_t sum1 = 0;
+    // int32_t min2 = INT32_MAX, max2 = INT32_MIN;
+    // int64_t sum2 = 0;
+
+    // for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
+    //   int32_t s0 = buf0[i] >> 8;
+    //   if (s0 < min0) min0 = s0;
+    //   if (s0 > max0) max0 = s0;
+    //   sum0 += s0;
+      
+    //   int32_t s1 = buf1[i] >> 8;
+    //   if (s1 < min1) min1 = s1;
+    //   if (s1 > max1) max1 = s1;
+    //   sum1 += s1;
+
+    //   int32_t s2 = buf2[i] >> 8;
+    //   if (s2 < min2) min2 = s2;
+    //   if (s2 > max2) max2 = s2;
+    //   sum2 += s2;
+    // }
+    // ESP_LOGI(TAG, "mic0: min=%ld max=%ld mean=%lld", (long)min0, (long)max0, sum0 / MIC_FRAME_SAMPLES);
+    // ESP_LOGI(TAG, "mic1: min=%ld max=%ld mean=%lld", (long)min1, (long)max1, sum1 / MIC_FRAME_SAMPLES);
+    // ESP_LOGI(TAG, "mic2: min=%ld max=%ld mean=%lld", (long)min2, (long)max2, sum2 / MIC_FRAME_SAMPLES);
   }
 }
