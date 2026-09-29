@@ -10,3 +10,4 @@
 esp_err_t mic_driver_init(void);
 esp_err_t mic_driver_read_stereo(int32_t* out_buf_left, int32_t* out_buf_right, size_t* bytes_read);
 esp_err_t mic_driver_read_mono(int32_t* out_buf, size_t* bytes_read);
+void tdoa(int32_t* buf0, int32_t* buf1, int32_t* buf2, size_t bytes_read_stereo, size_t bytes_read_stereo);

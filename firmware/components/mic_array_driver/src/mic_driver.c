@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "mic_driver.h"
 #include "gpio.h"
+#include "esp_dsp.h"
 
 static i2s_chan_handle_t rx0_handle;
 static i2s_chan_handle_t rx1_handle;
@@ -72,6 +73,16 @@ esp_err_t mic_driver_init() {
         return err;
     }
     err = i2s_channel_enable(rx1_handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    // initialise digital signal processing tool
+    err = dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
+    if (err  != ESP_OK) {
+        ESP_LOGE(TAG, "Not possible to initialize FFT. Error = %i\n", err);
+        return;
+    }
 
     return err;
 }
@@ -92,4 +103,30 @@ esp_err_t mic_driver_read_stereo(int32_t* out_buf_left, int32_t* out_buf_right, 
 esp_err_t mic_driver_read_mono(int32_t* out_buf, size_t* bytes_read) {
     esp_err_t err = i2s_channel_read(rx1_handle, out_buf, MIC_FRAME_SAMPLES * sizeof(int32_t), bytes_read, pdMS_TO_TICKS(1000));
     return err;
+}
+
+double tdoa(int32_t* buf0, int32_t* buf1, int32_t* buf2, size_t bytes_read_stereo, size_t bytes_read_stereo) {
+    // Generate hann window coefficients
+    float wind_str[(int) bytes_read_stereo], wind_mono[(int) bytes_read_mono];
+    dsps_wind_hann_f32(wind_str, (int) bytes_read_stereo);
+    dsps_wind_hann_f32(wind_mono, (int) bytes_read_mono);
+
+    // apply window
+    win0[(int) bytes_read_stereo], win1[(int) bytes_read_stereo], win2[(int) bytes_read_mono];
+    for (int i = 0; i < (int) bytes_read_stereo; i++) {
+        win0[i] = (float)buf0[i] * hann_mult;
+        win1[i] = (float)buf1[i] * hann_mult;
+    }
+    for (int i = 0; i < (int) bytes_read_mono; i++) {
+        win2[i] = (float)buf2[i] * hann_mult;
+    }
+
+    // fft each signal (bin values reversed)
+    dsps_fft2r_fc32(win0, (int) bytes_read_stereo);
+    dsps_fft2r_fc32(win1, (int) bytes_read_stereo);
+    dsps_fft2r_fc32(win2, (int) bytes_read_mono);
+    // reverse bits
+    dsps_bit_rev_fc32(win0, (int) bytes_read_stereo);
+    dsps_fft2r_fc32(win1, (int) bytes_read_stereo);
+    dsps_fft2r_fc32(win2, (int) bytes_read_mono);
 }

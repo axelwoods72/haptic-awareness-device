@@ -4,7 +4,6 @@
 #include "freertos/task.h"
 #include "imu_driver.h"
 #include "mic_driver.h"
-#include "esp_dsp.h"
 
 void mic_task (void* pv);
 
@@ -58,19 +57,7 @@ void mic_task (void* pv) {
     }
 
     // GCC-PHAT TDOA 
-    // 1. window each buffer to reduce spectral leakage
-    float window0[MIC_FRAME_SAMPLES], window1[MIC_FRAME_SAMPLES], window2[MIC_FRAME_SAMPLES];
-    hann_window(buf0, buf1, buf2, window0, window1, window2, bytes_read_stereo, bytes_read_mono);
-
-    for (int i = 0; i < (int) bytes_read_stereo; i++) {
-      float hann_mult = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (MIC_FRAME_SAMPLES - 1)));
-      window0[i] = (float)buf0[i] * hann_mult;
-      window1[i] = (float)buf1[i] * hann_mult;
-    }
-    for (int i = 0; i < (int) bytes_read_stereo; i++) {
-      float hann_mult = 0.5f * (1.0f - cosf(2.0f * M_PI * i / (MIC_FRAME_SAMPLES - 1)));
-      window2[i] = (float)buf2[i] * hann_mult;
-    }
+    double theta = tdoa(buf0, buf1, buf2, bytes_read_stereo, bytes_read_stereo);
 
     // int32_t min0 = INT32_MAX, max0 = INT32_MIN;
     // int64_t sum0 = 0;
