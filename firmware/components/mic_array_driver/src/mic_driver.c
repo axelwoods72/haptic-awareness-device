@@ -21,7 +21,7 @@ esp_err_t mic_driver_init() {
 
     // configure the stereo bus
     i2s_std_config_t std_cfg0 = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000),   // sample rate
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(MIC_SAMPLE_RATE),   // sample rate
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_32BIT, // bit width of each sample
             I2S_SLOT_MODE_STEREO
@@ -48,7 +48,7 @@ esp_err_t mic_driver_init() {
 
     // configure the mono bus
     i2s_std_config_t std_cfg1 = {
-        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(16000),   // sample rate
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(MIC_SAMPLE_RATE),   // sample rate
         .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
             I2S_DATA_BIT_WIDTH_32BIT, // bit width of each sample
             I2S_SLOT_MODE_MONO
