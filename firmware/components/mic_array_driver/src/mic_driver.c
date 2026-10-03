@@ -187,23 +187,30 @@ void ifft(float* G) {
     }
 }
 
+// value of the cross-correlation at a signed lag, negative lags wrap to the end of the circular buffer
+static float corr_at(float* G, int lag) {
+    int n = (lag + MIC_FRAME_SAMPLES) % MIC_FRAME_SAMPLES;
+    return G[2 * n]; // cross-correlation of two real signals is real
+}
+
 float get_time_delay(float* G) {
-    // Find peak magnitude in r[n], handling wraparound for negative lags
-    float max_val = -1.0f;
-    int max_idx = 0;
-    for (int n = 0; n < MIC_FRAME_SAMPLES; n++) {
-        float re = G[2*n] / MIC_FRAME_SAMPLES;   // conj+scale: real part sign doesn't matter for magnitude
-        float im = -G[2*n+1] / MIC_FRAME_SAMPLES;
-        float mag = sqrtf(re*re + im*im);
-        if (mag > max_val) {
-            max_val = mag;
-            max_idx = n;
+    // only search lags the mic spacing can physically produce
+    float max_val = -INFINITY;
+    int best_lag = 0;
+    for (int lag = -MAX_LAG; lag <= MAX_LAG; lag++) {
+        float r = corr_at(G, lag);
+        if (r > max_val) {
+            max_val = r;
+            best_lag = lag;
         }
     }
 
-    // Handle wraparound: lags > N/2 represent negative delays
-    int lag = (max_idx > MIC_FRAME_SAMPLES/2) ? (max_idx - MIC_FRAME_SAMPLES) : max_idx;
-    return (float) lag / (float) MIC_SAMPLE_RATE; // seconds
+    // parabolic interpolation through the peak and its neighbours for sub-sample delay
+    float y0 = corr_at(G, best_lag - 1), y1 = max_val, y2 = corr_at(G, best_lag + 1);
+    float denom = y0 - 2.0f * y1 + y2;
+    float offset = (fabsf(denom) > EPSILON) ? 0.5f * (y0 - y2) / denom : 0.0f;
+
+    return ((float) best_lag + offset) / (float) MIC_SAMPLE_RATE; // seconds
 }
 
 void hpf(int32_t *buf, int chan_i, float *out) {
