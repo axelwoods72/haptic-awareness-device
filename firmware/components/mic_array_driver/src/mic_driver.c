@@ -10,8 +10,8 @@ static i2s_chan_handle_t rx0_handle;
 static i2s_chan_handle_t rx1_handle;
 
 // hpf
-static float dc_x_prev[3] = {0}; // previous raw input, per channel (0=mic0,1=mic1,2=mic2)
-static float dc_y_prev[3] = {0}; // previous filtered output, per channel
+static float hpf_coef[5];          // b0, b1, b2, a1, a2
+static float hpf_w[N_MICS][2] = {0}; // filter state per mic, carried across frames
 
 // for calculating tau
 static float wind[MIC_FRAME_SAMPLES] __attribute__((aligned(16)));
@@ -22,12 +22,17 @@ static float G01[MIC_FRAME_SAMPLES * 2] __attribute__((aligned(16)));
 static float G02[MIC_FRAME_SAMPLES * 2] __attribute__((aligned(16)));
 static float G12[MIC_FRAME_SAMPLES * 2] __attribute__((aligned(16)));
 
+// running average of each pair's cross-power spectrum
+static float avg01[MIC_FRAME_SAMPLES * 2], avg02[MIC_FRAME_SAMPLES * 2], avg12[MIC_FRAME_SAMPLES * 2];
 
 // for calcualting theta
 static float a_coef[N_MICS]; // a_p for each mic pair
 static float b_coef[N_MICS]; // b_p for each mic pair
 static float S_aa, S_ab, S_bb; // sums of each a^2, b^2 and a*b
 static float inv_det;          // 1/det
+
+// expected lag in samples for each candidate angle and mic pair
+static float srp_lag[SRP_N_ANGLES][N_MICS];
 
 // create worker classes and set up i2s buses
 esp_err_t mic_driver_init() {
@@ -110,6 +115,11 @@ esp_err_t mic_driver_init() {
     // Generate hann window coefficients
     dsps_wind_hann_f32(wind, MIC_FRAME_SAMPLES);
 
+    err = dsps_biquad_gen_hpf_f32(hpf_coef, HPF_CUTOFF_HZ / MIC_SAMPLE_RATE, HPF_Q);
+    if (err != ESP_OK) {
+        return err;
+    }
+
     // calculate least squares coefficients
     float pos[N_MICS][2];
     get_mic_positions(pos);
@@ -129,6 +139,14 @@ esp_err_t mic_driver_init() {
 
     float det = S_aa * S_bb - S_ab * S_ab;
     inv_det = 1.0f / det;
+
+    // tau = a*sin(theta) + b*cos(theta)
+    for (int a = 0; a < SRP_N_ANGLES; a++) {
+        float th = a * SRP_STEP_DEG * (float) PI / 180.0f;
+        for (int p = 0; p < N_MICS; p++) {
+            srp_lag[a][p] = (a_coef[p] * sinf(th) + b_coef[p] * cosf(th)) * MIC_SAMPLE_RATE;
+        }
+    }
 
     return err;
 }
@@ -214,17 +232,33 @@ float get_time_delay(float* G) {
 }
 
 void hpf(int32_t *buf, int chan_i, float *out) {
-    const float alpha = 1.0f - (2.0f * PI * DC_CUTOFF_HZ / MIC_SAMPLE_RATE);
     for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
-        float x = (float)buf[i];
-        float y = x - dc_x_prev[chan_i] + alpha * dc_y_prev[chan_i];
-        out[i] = y;
-        dc_x_prev[chan_i] = x;
-        dc_y_prev[chan_i] = y;
+        out[i] = (float)buf[i];
     }
+    dsps_biquad_f32(out, out, MIC_FRAME_SAMPLES, hpf_coef, hpf_w[chan_i]);
 }
 
-void tdoa(float* tau, float* clean0, float* clean1, float* clean2) {
+// PHAT-normalised copy of an averaged cross-spectrum bin
+static void phat_bin(float* G, const float* avg, int i) {
+    float re = avg[2 * i], im = avg[2 * i + 1];
+    float mag = powf(hypotf(re, im) + EPSILON, 0.75f);
+    G[2 * i] = re / mag;
+    G[2 * i + 1] = im / mag;
+}
+
+void tdoa_reset(void) {
+    memset(avg01, 0, sizeof(avg01));
+    memset(avg02, 0, sizeof(avg02));
+    memset(avg12, 0, sizeof(avg12));
+}
+
+static void avg_bin(float* avg, int i, float re, float im) {
+    avg[2 * i] = (1.0f - CSD_ALPHA) * avg[2 * i] + CSD_ALPHA * re;
+    avg[2 * i + 1] = (1.0f - CSD_ALPHA) * avg[2 * i + 1] + CSD_ALPHA * im;
+}
+
+// fills G01/G02/G12 with each pair's GCC-PHAT cross-correlation
+static void gcc_phat(float* clean0, float* clean1, float* clean2) {
     // apply window and make interleaved complex with 0 imaginary part
     for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
         win0[i * 2] = clean0[i] * wind[i];
@@ -245,35 +279,87 @@ void tdoa(float* tau, float* clean0, float* clean1, float* clean2) {
     dsps_bit_rev_fc32(win1, MIC_FRAME_SAMPLES);
     dsps_bit_rev_fc32(win2, MIC_FRAME_SAMPLES);
 
-    // cross-power spectrum and normalise for each pair
+    // bin k holds frequency k * fs / N, bins above N/2 mirror the negative frequencies
+    const int k_min = (int)ceilf(GCC_MIN_HZ * MIC_FRAME_SAMPLES / MIC_SAMPLE_RATE);
+    const int k_max = (int)floorf(GCC_MAX_HZ * MIC_FRAME_SAMPLES / MIC_SAMPLE_RATE);
+
+    // cross-power spectrum, averaged over frames, then normalise for each pair
     for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
+        int k = (i <= MIC_FRAME_SAMPLES / 2) ? i : MIC_FRAME_SAMPLES - i;
+        if (k < k_min || k > k_max) {
+            G01[2 * i] = G01[2 * i + 1] = 0.0f;
+            G02[2 * i] = G02[2 * i + 1] = 0.0f;
+            G12[2 * i] = G12[2 * i + 1] = 0.0f;
+            continue;
+        }
+
         float r0 = win0[2 * i], r1 = win1[2 * i], r2 = win2[2 * i];
         float c0 = win0[2 * i + 1], c1 = win1[2 * i + 1], c2 = win2[2 * i + 1];
 
         float r01 = r0 * r1 + c0 * c1, r02 = r0 * r2 + c0 * c2, r12 = r1 * r2 + c1 * c2;
         float c01 = c0 * r1 - r0 * c1, c02 = c0 * r2 - r0 * c2, c12 = c1 * r2 - r1 * c2;
 
-        float mag = sqrtf(r01 * r01 + c01 * c01) + EPSILON;
-        G01[2 * i] = r01 / mag;
-        G01[2 * i + 1] = c01 / mag;
+        avg_bin(avg01, i, r01, c01);
+        avg_bin(avg02, i, r02, c02);
+        avg_bin(avg12, i, r12, c12);
 
-        mag = sqrtf(r02 * r02 + c02 * c02) + EPSILON;
-        G02[2 * i] = r02 / mag;
-        G02[2 * i + 1] = c02 / mag;
-
-        mag = sqrtf(r12 * r12 + c12 * c12) + EPSILON;
-        G12[2 * i] = r12 / mag;
-        G12[2 * i + 1] = c12 / mag;
+        phat_bin(G01, avg01, i);
+        phat_bin(G02, avg02, i);
+        phat_bin(G12, avg12, i);
     }
 
     // ifft = (1/N) * conj(FFT(conj(X)))
     ifft(G01);
     ifft(G02);
     ifft(G12);
+}
+
+void tdoa(float* tau, float* clean0, float* clean1, float* clean2) {
+    gcc_phat(clean0, clean1, clean2);
 
     tau[0] = get_time_delay(G01);
     tau[1] = get_time_delay(G02);
     tau[2] = get_time_delay(G12);
+}
+
+// linear interpolation of the cross-correlation at a fractional lag
+static float corr_interp(float* G, float lag) {
+    int l0 = (int) floorf(lag);
+    float frac = lag - (float) l0;
+    return (1.0f - frac) * corr_at(G, l0) + frac * corr_at(G, l0 + 1);
+}
+
+// steered response power: score every candidate angle by summing all pairs' correlation at the lags that angle predicts
+float srp_phat(float* clean0, float* clean1, float* clean2, float* score) {
+    gcc_phat(clean0, clean1, clean2);
+
+    float* G[N_MICS] = {G01, G02, G12};
+    float srp[SRP_N_ANGLES];
+    int best = 0;
+    for (int a = 0; a < SRP_N_ANGLES; a++) {
+        srp[a] = 0.0f;
+        for (int p = 0; p < N_MICS; p++) {
+            srp[a] += corr_interp(G[p], srp_lag[a][p]);
+        }
+        if (srp[a] > srp[best]) {
+            best = a;
+        }
+    }
+
+    // parabolic interpolation across neighbouring angles, wrapping at 360
+    float y0 = srp[(best - 1 + SRP_N_ANGLES) % SRP_N_ANGLES];
+    float y1 = srp[best];
+    float y2 = srp[(best + 1) % SRP_N_ANGLES];
+    float denom = y0 - 2.0f * y1 + y2;
+    float offset = (fabsf(denom) > EPSILON) ? 0.5f * (y0 - y2) / denom : 0.0f;
+
+    *score = y1;
+
+    float deg = ((float) best + offset) * SRP_STEP_DEG;
+    if (deg > 180.0f) {
+        deg -= 360.0f;
+    }
+    return deg * (float) PI / 180.0f;
 }
 
 void get_mic_positions (float pos[N_MICS][2]) {
@@ -285,7 +371,7 @@ void get_mic_positions (float pos[N_MICS][2]) {
     pos[2][1] = MIC_RADIUS * cosf(120 * (PI / 180));
 }
 
-// 0 degrees is forward, negative to the left, positive to the right
+// 0 rad is forward, negative to the left, positive to the right
 float tau_to_angle(float* tau) {
     float S_at = 0.0f, S_bt = 0.0f;
     for (int i = 0; i < N_MICS; i++) {
@@ -296,5 +382,5 @@ float tau_to_angle(float* tau) {
     float ux = (S_at * S_bb - S_bt * S_ab) * inv_det;
     float uy = (S_bt * S_aa - S_at * S_ab) * inv_det;
 
-    return atan2f(ux, uy) * (180.0f / (float) PI);
+    return atan2f(ux, uy);
 }

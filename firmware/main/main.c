@@ -64,6 +64,13 @@ void mic_task (void* pv) {
   int frame_count = 0, accepted_count = 0;
   float peak_max[N_MICS] = {0};
 
+  // smoothed direction as a unit vector, so -179 and +179 average to 180 rather than 0
+  float sin_avg = 0.0f, cos_avg = 1.0f;
+  int quiet_frames = QUIET_RESET_FRAMES;
+
+  // for ensuring theta is accurate at beginning of new sound event
+  int theta_fresh = 1;
+
   while (1) {
     int32_t buf0[MIC_FRAME_SAMPLES], buf1[MIC_FRAME_SAMPLES], buf2[MIC_FRAME_SAMPLES];
     size_t bytes_read_stereo, bytes_read_mono;
@@ -111,16 +118,49 @@ void mic_task (void* pv) {
 
     // ignore background noise
     if (!has_signal) {
+      quiet_frames++;
       continue;
     }
 
-    // GCC-PHAT TDOA 
+    // reset running avg for new sound
+    int new_event = quiet_frames >= QUIET_RESET_FRAMES;
+    quiet_frames = 0;
+    if (new_event) {
+      tdoa_reset();
+      theta_fresh = 1;
+    }
+
+#if USE_SRP_PHAT
+    float score;
+    float rad = srp_phat(clean0, clean1, clean2, &score);
+
+    ESP_LOGI(TAG, "srp theta: %.1f, score: %.3g", rad * 180.0f / (float)PI, score);
+#else
+    // GCC-PHAT TDOA
     float tau[3];
     tdoa(tau, clean0, clean1, clean2);
 
     ESP_LOGI(TAG, "tau01: %f, tau02: %f, tau12: %f", tau[0], tau[1], tau[2]);
 
-    float theta = tau_to_angle(tau);
+    // ensure same sound signal being evaluated for each cross-correlation
+    if (fabsf(tau[0] + tau[2] - tau[1]) > 3.0f / MIC_SAMPLE_RATE) {
+      ESP_LOGI(TAG, "Tau sum check failed, rejecting reading.");
+      continue;
+    }
+
+    float rad = tau_to_angle(tau);
+#endif
+
+    if (theta_fresh) {
+      sin_avg = sinf(rad);
+      cos_avg = cosf(rad);
+      theta_fresh = 0;
+    } else {
+      sin_avg = (1.0f - THETA_ALPHA) * sin_avg + THETA_ALPHA * sinf(rad);
+      cos_avg = (1.0f - THETA_ALPHA) * cos_avg + THETA_ALPHA * cosf(rad);
+    }
+
+    float theta = atan2f(sin_avg, cos_avg) * 180.0f / (float)PI;
     xQueueOverwrite(theta_queue, &theta);
 
     int32_t min0 = INT32_MAX, max0 = INT32_MIN;
