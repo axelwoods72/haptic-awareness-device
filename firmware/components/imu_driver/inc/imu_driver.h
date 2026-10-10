@@ -7,5 +7,5 @@ typedef struct {
   float mag_x, mag_y, mag_z;       // in mG
 } imu_data_t;
 
-esp_err_t imu_driver_init(void);
+esp_err_t imu_driver_setup(void);
 esp_err_t imu_driver_read(imu_data_t *out);
