@@ -83,11 +83,12 @@ void complementary_filter_update_mag(const imu_data_t *imu,
              imu->mag_z * sinf(phi_rad) * cosf(theta_rad);
   float yaw_mag = atan2f(-my, mx) * RAD_TO_DEG;
 
+  // First reading - use without gyro integration
   if (!yaw_initialized) {
     yaw = yaw_mag;
     yaw_initialized = true;
     return;
-  } // no roll/pitch values to calculate yaw_mag with
+  }
 
   // Blend the wrapped difference, not raw values since yaw from gyro and yaw
   // from mag can straddle the +-180 wrap point for the same heading
