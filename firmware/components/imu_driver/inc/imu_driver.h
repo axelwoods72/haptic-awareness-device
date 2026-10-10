@@ -8,4 +8,5 @@ typedef struct {
 } imu_data_t;
 
 esp_err_t imu_driver_setup(void);
-esp_err_t imu_driver_read(imu_data_t *out);
+esp_err_t imu_driver_read_accel_gyro(imu_data_t *out);
+esp_err_t imu_driver_read_mag(imu_data_t *out);

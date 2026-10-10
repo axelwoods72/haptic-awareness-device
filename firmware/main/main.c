@@ -1,10 +1,16 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/projdefs.h"
 #include "freertos/task.h"
 
 #include "complementary_filter.h"
 #include "imu_driver.h"
+#include "portmacro.h"
+#include <stdint.h>
+
+#define IMU_LOOP_PERIOD_MS 10    // 100 Hz
+#define N_LOOPS_PER_MAG_UPDATE 2 // update every 2nd loop - 50Hz
 
 static const char *TAG = "main";
 
@@ -13,32 +19,39 @@ void app_main(void) {
 
   esp_err_t err = imu_driver_setup();
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "imu_driver_setup failed: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "imu_driver_setup failed: %s\n", esp_err_to_name(err));
     return;
   }
+  complementary_filter_init();
 
   imu_data_t imu_data;
   orientation_data_t orientation;
+  uint32_t loop_cnt = 0;
 
-  complementary_filter_init();
+  TickType_t last_wake_time = xTaskGetTickCount();
+  const TickType_t period_ticks = pdMS_TO_TICKS(IMU_LOOP_PERIOD_MS);
 
   while (1) {
-    err = imu_driver_read(&imu_data);
-    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "imu_driver_read failed: %s", esp_err_to_name(err));
-    } else {
-      ESP_LOGI(TAG,
-               "accel: %.3f %.3f %.3f g | gyro: %.2f %.2f %.2f deg/s | mag: "
-               "%.1f %.1f %.1f mG \n",
-               imu_data.accel_x, imu_data.accel_y, imu_data.accel_z,
-               imu_data.gyro_x, imu_data.gyro_y, imu_data.gyro_z,
-               imu_data.mag_x, imu_data.mag_y, imu_data.mag_z);
-      complementary_filter_update(&imu_data, &orientation);
-      ESP_LOGI(TAG, "pitch: %.2f deg | roll: %.2f deg | yaw: %.2f deg ",
-               orientation.pitch, orientation.roll, orientation.yaw);
-      printf("ORIENT,%.2f,%.2f,%.2f\n", orientation.roll, orientation.pitch,
-             orientation.yaw);
+    // Read and integrate accel/gyro every loop
+    err = imu_driver_read_accel_gyro(&imu_data);
+    if (err == ESP_OK) {
+      ESP_LOGE(TAG, "imu_driver_read_mag failed: %s\n", esp_err_to_name(err));
     }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    complementary_filter_update_gyro(&imu_data, &orientation);
+
+    // Read and integrate mag every second loop
+    if (loop_cnt % N_LOOPS_PER_MAG_UPDATE == 0) {
+      err = imu_driver_read_mag(&imu_data);
+      if (err == ESP_OK) {
+        ESP_LOGE(TAG, "imu_driver_read_mag failed: %s\n", esp_err_to_name(err));
+      }
+      complementary_filter_update_mag(&imu_data, &orientation);
+    }
+
+    loop_cnt++;
+    // visualize_imu.py greps this from serial
+    printf("ORIENT,%.2f,%.2f,%.2f\n", orientation.roll, orientation.pitch,
+           orientation.yaw);
+    vTaskDelayUntil(&last_wake_time, period_ticks);
   }
 }

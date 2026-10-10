@@ -134,9 +134,9 @@ esp_err_t imu_driver_setup(void) {
   return ESP_OK;
 }
 
-esp_err_t imu_driver_read(imu_data_t *out) {
+esp_err_t imu_driver_read_accel_gyro(imu_data_t *out) {
 
-  // Read MPU6050 first
+  // Relevant registers of MPU6050
   uint8_t mpu_reg = 0x3B; // ACCEL_XOUT_H — start of the 14-byte burst
   uint8_t mpu_buf[14];
 
@@ -164,7 +164,11 @@ esp_err_t imu_driver_read(imu_data_t *out) {
   out->gyro_y = raw_gy / 131.0f;
   out->gyro_z = raw_gz / 131.0f;
 
-  /* This is for when not using aux bus */
+  return ESP_OK;
+}
+
+esp_err_t imu_driver_read_mag(imu_data_t *out) {
+  /* This was for when not using aux bus */
   // // Read MMC5603 second
   // uint8_t mmc_reg = MMC5603_REG_XOUT0;
   // uint8_t mmc_buf[9];
@@ -175,11 +179,11 @@ esp_err_t imu_driver_read(imu_data_t *out) {
   // if (err != ESP_OK)
   //   return err;
 
-  // Read MMC5603 second via MPU6050's EXT_SENS_DATA registers (0x49 onward),
+  // Read MMC5603 via MPU6050's EXT_SENS_DATA registers (0x49 onward)
   uint8_t mmc_reg = 0x49;
   uint8_t mmc_buf[9];
-  err = i2c_master_transmit_receive(mpu6050_handle, &mmc_reg, 1, mmc_buf,
-                                    sizeof(mmc_buf), 100);
+  esp_err_t err = i2c_master_transmit_receive(mpu6050_handle, &mmc_reg, 1,
+                                              mmc_buf, sizeof(mmc_buf), 100);
   if (err != ESP_OK)
     return err;
 
