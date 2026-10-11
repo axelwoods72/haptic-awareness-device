@@ -94,6 +94,29 @@ void mic_task (void* pv) {
       continue;
     }
 
+    // per-frame raw stats for every frame read for debugging
+    // raw samples are 24-bit left-justified in 32-bit slots, so >> 8
+    {
+      const int32_t *bufs[N_MICS] = {buf0, buf1, buf2};
+      int32_t mn[N_MICS], mx[N_MICS];
+      int64_t sum[N_MICS];
+      for (int m = 0; m < N_MICS; m++) {
+        mn[m] = INT32_MAX;
+        mx[m] = INT32_MIN;
+        sum[m] = 0;
+        for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
+          int32_t s = bufs[m][i] >> 8;
+          if (s < mn[m]) mn[m] = s;
+          if (s > mx[m]) mx[m] = s;
+          sum[m] += s;
+        }
+      }
+      ESP_LOGI(TAG, "frame: mic0 avg=%lld min=%ld max=%ld | mic1 avg=%lld min=%ld max=%ld | mic2 avg=%lld min=%ld max=%ld",
+        sum[0] / MIC_FRAME_SAMPLES, (long)mn[0], (long)mx[0],
+        sum[1] / MIC_FRAME_SAMPLES, (long)mn[1], (long)mx[1],
+        sum[2] / MIC_FRAME_SAMPLES, (long)mn[2], (long)mx[2]);
+    }
+
     // hpf each signal
     float clean0[MIC_FRAME_SAMPLES], clean1[MIC_FRAME_SAMPLES], clean2[MIC_FRAME_SAMPLES];
     hpf(buf0, 0, clean0);
@@ -162,32 +185,5 @@ void mic_task (void* pv) {
 
     float theta = atan2f(sin_avg, cos_avg) * 180.0f / (float)PI;
     xQueueOverwrite(theta_queue, &theta);
-
-    int32_t min0 = INT32_MAX, max0 = INT32_MIN;
-    int64_t sum0 = 0;
-    int32_t min1 = INT32_MAX, max1 = INT32_MIN;
-    int64_t sum1 = 0;
-    int32_t min2 = INT32_MAX, max2 = INT32_MIN;
-    int64_t sum2 = 0;
-
-    for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
-      int32_t s0 = (int32_t)clean0[i] >> 8;
-      if (s0 < min0) min0 = s0;
-      if (s0 > max0) max0 = s0;
-      sum0 += s0;
-      
-      int32_t s1 = (int32_t)clean1[i] >> 8;
-      if (s1 < min1) min1 = s1;
-      if (s1 > max1) max1 = s1;
-      sum1 += s1;
-
-      int32_t s2 = (int32_t)clean2[i] >> 8;
-      if (s2 < min2) min2 = s2;
-      if (s2 > max2) max2 = s2;
-      sum2 += s2;
-    }
-    ESP_LOGI(TAG, "mic0: min=%ld max=%ld mean=%lld", (long)min0, (long)max0, sum0 / MIC_FRAME_SAMPLES);
-    ESP_LOGI(TAG, "mic1: min=%ld max=%ld mean=%lld", (long)min1, (long)max1, sum1 / MIC_FRAME_SAMPLES);
-    ESP_LOGI(TAG, "mic2: min=%ld max=%ld mean=%lld", (long)min2, (long)max2, sum2 / MIC_FRAME_SAMPLES);
   }
 }

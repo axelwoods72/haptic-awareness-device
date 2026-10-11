@@ -1,4 +1,5 @@
 #include "driver/i2s_std.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -92,6 +93,26 @@ esp_err_t mic_driver_init() {
         },
     };
     err = i2s_channel_init_std_mode(rx1_handle, &std_cfg1);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    // pull SD lines low so slots no mic drives read 0 instead of floating
+    err = gpio_pulldown_en(SD0_PIN);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = gpio_pulldown_en(SD1_PIN);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    // reduced drive on the clock lines to soften edges and reduce ringing over long wires
+    err = gpio_set_drive_capability(BCLK_PIN, GPIO_DRIVE_CAP_1);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = gpio_set_drive_capability(WS_PIN, GPIO_DRIVE_CAP_1);
     if (err != ESP_OK) {
         return err;
     }
