@@ -9,10 +9,12 @@
 #include "portmacro.h"
 #include "freertos/queue.h"
 #include "mic_driver.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 #define IMU_LOOP_PERIOD_MS 10    // 100 Hz
 #define N_LOOPS_PER_MAG_UPDATE 2 // update every 2nd loop - 50Hz
+#define SOUND_HOLD_MS 250
 
 void mic_task (void* pv);
 
@@ -29,7 +31,7 @@ void app_main(void) {
     return;
   }
   // queue length of 1
-  theta_queue = xQueueCreate(1, sizeof(float)); 
+  theta_queue = xQueueCreate(1, sizeof(mic_output_t)); 
   if (theta_queue == NULL) {
     ESP_LOGE(TAG, "Failed to create theta queue");
     return;
@@ -45,6 +47,7 @@ void app_main(void) {
 
   TickType_t last_wake_time = xTaskGetTickCount();
   const TickType_t period_ticks = pdMS_TO_TICKS(IMU_LOOP_PERIOD_MS);
+  mic_output_t mic_output = {0};
 
   while (1) {
     // Read and integrate accel/gyro every loop
@@ -68,9 +71,17 @@ void app_main(void) {
     printf("ORIENT,%.2f,%.2f,%.2f\n", orientation.roll, orientation.pitch,
            orientation.yaw);
 
-    float theta;
-    if (xQueueReceive(theta_queue, &theta, pdMS_TO_TICKS(0)) == pdTRUE) {
+    xQueueReceive(theta_queue, &mic_output, 0);
+    bool sound_active = (xTaskGetTickCount() - mic_output.last_heard) < pdMS_TO_TICKS(SOUND_HOLD_MS);
+
+    if (sound_active) {
+      float theta = mic_output.theta;
       ESP_LOGI(TAG, "Theta: %f", theta);
+
+      // motors on
+
+    } else {
+      // turn motors off
     }
 
     vTaskDelayUntil(&last_wake_time, period_ticks);
@@ -97,6 +108,7 @@ void mic_task (void* pv) {
   while (1) {
     int32_t buf0[MIC_FRAME_SAMPLES], buf1[MIC_FRAME_SAMPLES], buf2[MIC_FRAME_SAMPLES];
     size_t bytes_read_stereo, bytes_read_mono;
+    mic_output_t mic_out;
 
     err = mic_driver_read_stereo(buf0, buf1, &bytes_read_stereo);
     if (err != ESP_OK) {
@@ -184,7 +196,9 @@ void mic_task (void* pv) {
     }
 
     float theta = atan2f(sin_avg, cos_avg) * 180.0f / (float)PI;
-    xQueueOverwrite(theta_queue, &theta);
+    mic_out.theta = theta;
+    mic_out.last_heard = xTaskGetTickCount();
+    xQueueOverwrite(theta_queue, &mic_out);
 
     int32_t min0 = INT32_MAX, max0 = INT32_MIN;
     int64_t sum0 = 0;

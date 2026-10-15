@@ -5,8 +5,9 @@
 #include <string.h>
 #include <math.h>
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
 
-#define AMP_THRES 8500
+#define AMP_THRES 10000
 #define HPF_CUTOFF_HZ 300.0f
 #define HPF_Q 0.7071f // butterworth
 #define GCC_MIN_HZ 300.0f // cross-spectrum lower cutoff
@@ -28,6 +29,11 @@
 
 #define THETA_ALPHA 0.3f // weighting for new theta running avg
 #define QUIET_RESET_FRAMES (MIC_SAMPLE_RATE / MIC_FRAME_SAMPLES / 2) // 0.5s
+
+typedef struct {
+    float theta;
+    TickType_t last_heard;
+} mic_output_t;
 
 esp_err_t mic_driver_init(void);
 esp_err_t mic_driver_read_stereo(int32_t* out_buf_left, int32_t* out_buf_right, size_t* bytes_read);
