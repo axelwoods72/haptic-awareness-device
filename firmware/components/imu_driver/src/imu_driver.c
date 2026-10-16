@@ -1,6 +1,7 @@
 #include "imu_driver.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hal/i2c_types.h"
@@ -36,6 +37,14 @@ esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
   if (err != ESP_OK)
     return err;
 
+  ESP_LOGI("imu", "port %d: MPU 0x68 %s, MMC 0x30 %s", imu_cfg->port,
+           i2c_master_probe(imu_handle->bus_handle, 0x68, 100) == ESP_OK
+               ? "OK"
+               : "missing",
+           i2c_master_probe(imu_handle->bus_handle, 0x30, 100) == ESP_OK
+               ? "OK"
+               : "missing");
+
   // Add device - MPU6050 IMU
   i2c_device_config_t dev1_config = {
       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -61,14 +70,6 @@ esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
   uint8_t wake_cmd[2] = {0x6B, 0x00};
   err = i2c_master_transmit(imu_handle->mpu6050_handle, wake_cmd,
                             sizeof(wake_cmd), 100);
-  if (err != ESP_OK)
-    return err;
-
-  // I2C bypass MPU6050 to talk to MMC5603 (they are daisy chained via MPU6050
-  // auxillary I2C pins)
-  uint8_t bypass_on_cmd[2] = {0x37, 0x02};
-  err = i2c_master_transmit(imu_handle->mpu6050_handle, bypass_on_cmd,
-                            sizeof(bypass_on_cmd), 100);
   if (err != ESP_OK)
     return err;
 
@@ -103,43 +104,6 @@ esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
   uint8_t cmm_en_cmd[2] = {MMC5603_REG_CTRL2, MMC5603_CMM_EN};
   err = i2c_master_transmit(imu_handle->mmc5603_handle, cmm_en_cmd,
                             sizeof(cmm_en_cmd), 100);
-  if (err != ESP_OK)
-    return err;
-
-  // Stop bypassing MPU6050
-  uint8_t bypass_off_cmd[2] = {0x37, 0x00};
-  err = i2c_master_transmit(imu_handle->mpu6050_handle, bypass_off_cmd,
-                            sizeof(bypass_off_cmd), 100);
-  if (err != ESP_OK)
-    return err;
-
-  // Set MPU6050 as master to control MMC5603 slave
-  uint8_t mst_en_cmd[2] = {0x6A, 0x20};
-  err = i2c_master_transmit(imu_handle->mpu6050_handle, mst_en_cmd,
-                            sizeof(mst_en_cmd), 100);
-  if (err != ESP_OK)
-    return err;
-
-  // Set speed of auxillary I2C bus to 400kHz to match main bus
-  uint8_t mst_ctrl_cmd[2] = {0x24, 0x0D};
-  err = i2c_master_transmit(imu_handle->mpu6050_handle, mst_ctrl_cmd,
-                            sizeof(mst_ctrl_cmd), 100);
-  if (err != ESP_OK)
-    return err;
-
-  // Give MPU the address of MMC and set it to read from it
-  uint8_t slv0_addr_cmd[2] = {0x25, 0x80 | MMC5603_ADDR};
-  // Tell it where to start reading from in MMC
-  uint8_t slv0_reg_cmd[2] = {0x26, MMC5603_REG_XOUT0};
-  // Tell it how many bytes to read
-  uint8_t slv0_ctrl_cmd[2] = {0x27, 0x80 | 9};
-  err = i2c_master_transmit(imu_handle->mpu6050_handle, slv0_addr_cmd, 2, 100);
-  if (err != ESP_OK)
-    return err;
-  err = i2c_master_transmit(imu_handle->mpu6050_handle, slv0_reg_cmd, 2, 100);
-  if (err != ESP_OK)
-    return err;
-  err = i2c_master_transmit(imu_handle->mpu6050_handle, slv0_ctrl_cmd, 2, 100);
   if (err != ESP_OK)
     return err;
 
@@ -181,22 +145,12 @@ esp_err_t imu_driver_read_accel_gyro(imu_handle_t *imu_handle,
 }
 
 esp_err_t imu_driver_read_mag(imu_handle_t *imu_handle, imu_data_t *out) {
-  /* This was for when not using aux bus */
-  // // Read MMC5603 second
-  // uint8_t mmc_reg = MMC5603_REG_XOUT0;
-  // uint8_t mmc_buf[9];
-
-  // // Read data into buffer
-  // err = i2c_master_transmit_receive(mmc5603_handle, &mmc_reg, 1, mmc_buf,
-  //                                   sizeof(mmc_buf), 100);
-  // if (err != ESP_OK)
-  //   return err;
-
-  // Read MMC5603 via MPU6050's EXT_SENS_DATA registers (0x49 onward)
-  uint8_t mmc_reg = 0x49;
+  uint8_t mmc_reg = MMC5603_REG_XOUT0;
   uint8_t mmc_buf[9];
+
+  // Read data into buffer
   esp_err_t err = i2c_master_transmit_receive(
-      imu_handle->mpu6050_handle, &mmc_reg, 1, mmc_buf, sizeof(mmc_buf), 100);
+      imu_handle->mmc5603_handle, &mmc_reg, 1, mmc_buf, sizeof(mmc_buf), 100);
   if (err != ESP_OK)
     return err;
 
