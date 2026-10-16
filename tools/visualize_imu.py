@@ -1,7 +1,7 @@
 """
 Live 3D orientation visualizer for the haptic headband IMU.
 
-Reads "ORIENT,<roll>,<pitch>,<yaw>" lines over serial (printed by main.c)
+Reads "HEAD,<roll>,<pitch>,<yaw>" lines over serial (printed by main.c)
 and draws a rotating box in real time so you can sanity-check that the
 complementary filter's roll/pitch/yaw actually track how you're moving
 the board.
@@ -26,7 +26,7 @@ Setup:
 
 Usage:
     1. Set SERIAL_PORT below to match your board (check with `ls /dev/cu.*`).
-    2. Flash + run the firmware so it's printing ORIENT lines.
+    2. Flash + run the firmware so it's printing HEAD lines.
     3. python visualize_imu.py
 """
 
@@ -49,8 +49,8 @@ HISTORY_SECONDS = 10  # how much time-series history to keep and show
 
 # --- Serial reading (runs in a background thread) -----------------------
 
-# Matches lines like: ORIENT,-3.21,12.50,178.04
-LINE_RE = re.compile(r"ORIENT,(-?\d+\.?\d*),(-?\d+\.?\d*),(-?\d+\.?\d*)")
+# Matches lines like: HEAD,-3.21,12.50,178.04
+LINE_RE = re.compile(r"HEAD,(-?\d+\.?\d*),(-?\d+\.?\d*),(-?\d+\.?\d*)")
 
 latest = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
 lock = threading.Lock()

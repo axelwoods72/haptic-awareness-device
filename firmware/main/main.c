@@ -130,9 +130,11 @@ void app_main(void) {
 
     float axels_theta = wrap_angle(head_yaw - body_yaw);
 
-    // visualize_imu.py greps this from serial
-    printf("ORIENT,%.2f,%.2f,%.2f\n", head_orient.roll, head_orient.pitch,
+    // for visualization tools
+    printf("HEAD,%.2f,%.2f,%.2f\n", head_orient.roll, head_orient.pitch,
            head_yaw);
+    printf("BODY,%.2f,%.2f,%.2f\n", body_orient.roll, body_orient.pitch,
+           body_yaw);
     printf("NECK,%.2f\n", axels_theta);
     /* ---------------- */
 
