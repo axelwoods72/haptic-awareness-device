@@ -1,5 +1,6 @@
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/projdefs.h"
 #include "freertos/task.h"
@@ -7,15 +8,20 @@
 #include "complementary_filter.h"
 #include "freertos/queue.h"
 #include "gpio.h"
+#include "haptic_control.h"
 #include "imu_driver.h"
 #include "mic_driver.h"
 #include "portmacro.h"
 #include <stdbool.h>
+#include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 
 #define IMU_LOOP_PERIOD_MS 10    // 100 Hz
 #define N_LOOPS_PER_MAG_UPDATE 2 // update every 2nd loop - 50Hz
 #define SOUND_HOLD_MS 250
+#define HAPTIC_STRENGTH 0.4f
+#define HAPTIC_LOOP_PERIOD_MS 10
 
 static const char *TAG = "main";
 
@@ -23,16 +29,25 @@ static imu_handle_t imu_head, imu_body;
 static comp_filter_t f_head, f_body;
 
 void mic_task(void *pv);
-void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
+bool imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
                 orientation_data_t *orient, bool do_mag);
 
-QueueHandle_t theta_queue;
+static QueueHandle_t theta_queue;
+static QueueHandle_t haptic_queue;
+static void haptic_task(void *pv);
+static uint32_t now_ms(void) {
+  return (uint32_t)(esp_timer_get_time() / 1000);
+}
 
 /* ================================================================== */
 /* Main                                                               */
 /* ================================================================== */
 
 void app_main(void) {
+  /* Set all motor outputs LOW before waiting for sensors. */
+  const haptic_config_t motor_cfg = {
+      .ia = {HAPTIC_FRONT_PIN, HAPTIC_RIGHT_PIN, HAPTIC_BACK_PIN, HAPTIC_LEFT_PIN}};
+  ESP_ERROR_CHECK(haptic_init(&motor_cfg));
   vTaskDelay(pdMS_TO_TICKS(2000));
 
   /* ---- IMU setup ---- */
@@ -64,8 +79,26 @@ void app_main(void) {
     return;
   }
 
-  // mic_task runs in parallel with imu driver, large stack memory allocation
-  xTaskCreatePinnedToCore(mic_task, "mic_task", 16384, NULL, 5, NULL, 1);
+  haptic_queue = xQueueCreate(1, sizeof(haptic_command_t));
+  if (haptic_queue == NULL) {
+    ESP_LOGE(TAG, "Failed to create haptic queue");
+    vQueueDelete(theta_queue);
+    return;  // outputs remain LOW
+  }
+  /* Only this task writes PWM after init. It expires stale commands even
+   * while the sensor loop is waiting for I2C. */
+  if (xTaskCreatePinnedToCore(haptic_task, "haptic_task", 4096, NULL, 4,
+                              NULL, 0) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create haptic task");
+    vQueueDelete(haptic_queue);
+    vQueueDelete(theta_queue);
+    return;
+  }
+  if (xTaskCreatePinnedToCore(mic_task, "mic_task", 16384, NULL, 5,
+                              NULL, 1) != pdPASS) {
+    ESP_LOGE(TAG, "Failed to create mic task");
+    return;  // haptic task has no active command and stays stopped
+  }
 
   orientation_data_t head_orient = {0}, body_orient = {0};
   uint32_t loop_cnt = 0;
@@ -73,13 +106,14 @@ void app_main(void) {
   TickType_t last_wake_time = xTaskGetTickCount();
   const TickType_t period_ticks = pdMS_TO_TICKS(IMU_LOOP_PERIOD_MS);
   mic_output_t mic_output = {0};
+  bool have_sound_sample = false;
 
   /* ---- loop ---- */
   while (1) {
     /* ---- IMU ---- */
     bool do_mag = (loop_cnt % N_LOOPS_PER_MAG_UPDATE == 0);
-    imu_update("head", &imu_head, &f_head, &head_orient, do_mag);
-    imu_update("body", &imu_body, &f_body, &body_orient, do_mag);
+    bool head_ok = imu_update("head", &imu_head, &f_head, &head_orient, do_mag);
+    bool body_ok = imu_update("body", &imu_body, &f_body, &body_orient, do_mag);
     loop_cnt++;
 
     float axels_theta = wrap_angle(head_orient.yaw - body_orient.yaw);
@@ -90,20 +124,28 @@ void app_main(void) {
     printf("NECK,%.2f\n", axels_theta);
     /* ---------------- */
 
-    xQueueReceive(theta_queue, &mic_output, 0);
-    bool sound_active = (xTaskGetTickCount() - mic_output.last_heard) <
-                        pdMS_TO_TICKS(SOUND_HOLD_MS);
+    if (xQueueReceive(theta_queue, &mic_output, 0) == pdTRUE)
+      have_sound_sample = true;
+    bool sound_active = have_sound_sample &&
+        (TickType_t)(xTaskGetTickCount() - mic_output.last_heard) <
+        pdMS_TO_TICKS(SOUND_HOLD_MS);
+    if (!sound_active) have_sound_sample = false;
 
-    if (sound_active) {
-      float blakes_theta = mic_output.theta;
-      float sams_theta = blakes_theta - axels_theta;
-      ESP_LOGI(TAG, "Theta: %f", blakes_theta);
-
-      // motors on
-
-    } else {
-      // turn motors off
+    haptic_command_t command = {.updated_at_ms = now_ms()};
+    if (sound_active && head_ok && body_ok) {
+      float sams_theta;
+      if (haptic_body_angle(mic_output.theta, head_orient.yaw,
+                            body_orient.yaw, &sams_theta) == ESP_OK) {
+        command.theta_deg = sams_theta;
+        command.strength = HAPTIC_STRENGTH;
+        command.active = true;
+        /* Preserve the mic visualiser's log and expose the corrected angle. */
+        ESP_LOGI(TAG, "Theta: %f", mic_output.theta);
+        ESP_LOGD(TAG, "Belt theta: %.2f", sams_theta);
+      }
     }
+    /* Disabled commands stop every channel; no blocking one-second demo. */
+    xQueueOverwrite(haptic_queue, &command);
 
     vTaskDelayUntil(&last_wake_time, period_ticks);
   }
@@ -113,7 +155,26 @@ void app_main(void) {
 /* Helper functions                                                   */
 /* ================================================================== */
 
+static void haptic_task(void *pv) {
+  (void)pv;
+  haptic_command_t latest = {0};
+  TickType_t wake = xTaskGetTickCount();
+  while (1) {
+    xQueueReceive(haptic_queue, &latest, 0);
+    uint32_t now = now_ms();
+    if ((uint32_t)(now - latest.updated_at_ms) >= HAPTIC_COMMAND_TIMEOUT_MS)
+      latest.active = false;  // latch expiry until a new command arrives
+    esp_err_t err = haptic_apply_command(&latest, now);
+    if (err != ESP_OK) {
+      /* Invalid inputs and write failures already stop all configured motors. */
+      ESP_LOGE(TAG, "Haptic output failed: %s", esp_err_to_name(err));
+    }
+    vTaskDelayUntil(&wake, pdMS_TO_TICKS(HAPTIC_LOOP_PERIOD_MS));
+  }
+}
+
 void mic_task(void *pv) {
+  (void)pv;
   esp_err_t err = mic_driver_init();
   ESP_ERROR_CHECK(err);
   ESP_LOGI(TAG, "mic_driver initialised, threshold=%d", AMP_THRES);
@@ -155,8 +216,8 @@ void mic_task(void *pv) {
       ESP_LOGW(TAG,
                "Actual bytes read smaller than expected (%u bytes):\nmic0: "
                "%u\nmic1: %u\nmic2: %u",
-               expected_bytes, bytes_read_stereo / 2, bytes_read_stereo / 2,
-               bytes_read_mono);
+               (unsigned)expected_bytes, (unsigned)bytes_read_stereo,
+               (unsigned)bytes_read_stereo, (unsigned)bytes_read_mono);
       continue;
     }
 
@@ -191,7 +252,7 @@ void mic_task(void *pv) {
 
     // ignore background noise
     if (!has_signal) {
-      quiet_frames++;
+      if (quiet_frames < QUIET_RESET_FRAMES) quiet_frames++;
       continue;
     }
 
@@ -277,13 +338,13 @@ void mic_task(void *pv) {
   }
 }
 
-void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
+bool imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
                 orientation_data_t *orient, bool do_mag) {
   imu_data_t data;
   esp_err_t err = imu_driver_read_accel_gyro(imu, &data);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "%s accel/gyro read failed: %s", name, esp_err_to_name(err));
-    return;
+    return false;
   }
   complementary_filter_update_gyro(f, &data, orient);
 
@@ -291,8 +352,14 @@ void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
     err = imu_driver_read_mag(imu, &data);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "%s mag read failed: %s", name, esp_err_to_name(err));
-      return;
+      f->yaw_initialized = false;  // require a good heading before re-enabling
+      return false;
     }
     complementary_filter_update_mag(f, &data, orient);
   }
+  if (!isfinite(orient->yaw) || !isfinite(orient->roll) || !isfinite(orient->pitch)) {
+    complementary_filter_init(f);
+    return false;
+  }
+  return f->yaw_initialized;
 }

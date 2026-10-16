@@ -175,9 +175,14 @@ esp_err_t mic_driver_init() {
 // read in MIC_FRAME_SAMPLES from stereo channel
 esp_err_t mic_driver_read_stereo(int32_t* out_buf_left, int32_t* out_buf_right, size_t* bytes_read) {
     int32_t raw_buf[MIC_FRAME_SAMPLES * 2];  // stereo interleaved: [L0, R0, L1, R1, ...]
+    *bytes_read = 0;
     esp_err_t err = i2s_channel_read(rx0_handle, raw_buf, MIC_FRAME_SAMPLES * 2 * sizeof(int32_t), bytes_read, pdMS_TO_TICKS(1000));
 
-    for (int i = 0; i < *bytes_read / (2 * sizeof(int32_t)); i++) {
+    if (err != ESP_OK) return err;
+    if (*bytes_read > sizeof(raw_buf) || *bytes_read % (2 * sizeof(int32_t)) != 0)
+        return ESP_ERR_INVALID_SIZE;
+
+    for (size_t i = 0; i < *bytes_read / (2 * sizeof(int32_t)); i++) {
         out_buf_left[i] = raw_buf[2 * i];
         out_buf_right[i] = raw_buf[2 * i + 1];
     }
@@ -188,6 +193,7 @@ esp_err_t mic_driver_read_stereo(int32_t* out_buf_left, int32_t* out_buf_right, 
 
 // read in MIC_FRAME_SAMPLES from mono channel
 esp_err_t mic_driver_read_mono(int32_t* out_buf, size_t* bytes_read) {
+    *bytes_read = 0;
     esp_err_t err = i2s_channel_read(rx1_handle, out_buf, MIC_FRAME_SAMPLES * sizeof(int32_t), bytes_read, pdMS_TO_TICKS(1000));
     return err;
 }

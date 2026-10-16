@@ -9,10 +9,10 @@
 #define DEG_TO_RAD ((float)M_PI / 180.0f)
 
 float wrap_angle(float diff) {
-  while (diff > 180.0f)
-    diff -= 360.0f;
-  while (diff < -180.0f)
-    diff += 360.0f;
+  if (!isfinite(diff)) return NAN;
+  diff = fmodf(diff, 360.0f);
+  if (diff > 180.0f) diff -= 360.0f;
+  if (diff < -180.0f) diff += 360.0f;
   return diff;
 }
 

@@ -1,5 +1,7 @@
 #pragma once
 #include "imu_driver.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 typedef struct {
   float pitch;
