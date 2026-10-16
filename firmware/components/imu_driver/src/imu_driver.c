@@ -1,6 +1,8 @@
 #include "imu_driver.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "hal/i2c_types.h"
 
 #define MPU6050_ADDR 0x68
@@ -16,6 +18,7 @@
 
 #define MMC5603_CMM_FREQ_EN (1 << 7) // bit 7 of Internal Control 0
 #define MMC5603_CMM_EN (1 << 4)      // bit 4 of Internal Control 2
+#define MMC5603_AUTO_SR_EN (1 << 5)  // bit 5 of Internal Control 0
 
 esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
                            const imu_config_t *imu_cfg) {
@@ -43,6 +46,15 @@ esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
                                   &imu_handle->mpu6050_handle);
   if (err != ESP_OK)
     return err;
+
+  // Reset MPU6050 - it stays powered across ESP32 resets, so clear any
+  // state left over from a previous run
+  uint8_t reset_cmd[2] = {0x6B, 0x80}; // PWR_MGMT_1: DEVICE_RESET
+  err = i2c_master_transmit(imu_handle->mpu6050_handle, reset_cmd,
+                            sizeof(reset_cmd), 100);
+  if (err != ESP_OK)
+    return err;
+  vTaskDelay(pdMS_TO_TICKS(100)); // wait for reset to complete
 
   // Wake up MPU6050 - it powers on in sleep mode.
   // Write 0x00 to PWR_MGMT_1 (register 0x6B) to clear the SLEEP bit.
@@ -79,8 +91,9 @@ esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
   if (err != ESP_OK)
     return err;
 
-  // Tell chip to calculate its internal measurement period from ODR
-  uint8_t cmm_freq_cmd[2] = {MMC5603_REG_CTRL0, MMC5603_CMM_FREQ_EN};
+  // Calculate measurement period from ODR + enable automatic set/reset
+  uint8_t cmm_freq_cmd[2] = {MMC5603_REG_CTRL0,
+                             MMC5603_CMM_FREQ_EN | MMC5603_AUTO_SR_EN};
   err = i2c_master_transmit(imu_handle->mmc5603_handle, cmm_freq_cmd,
                             sizeof(cmm_freq_cmd), 100);
   if (err != ESP_OK)
