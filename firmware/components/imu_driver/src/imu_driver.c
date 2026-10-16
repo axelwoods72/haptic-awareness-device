@@ -82,8 +82,7 @@ esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
   if (err != ESP_OK)
     return err;
 
-  // Configure MMC5603 to continuous mode
-  // Set output data rate
+  // Configure MMC5603 to continuous mode + set output data rate
   uint8_t odr_cmd[2] = {MMC5603_REG_ODR, OUTPUT_DATA_RATE};
   err = i2c_master_transmit(imu_handle->mmc5603_handle, odr_cmd,
                             sizeof(odr_cmd), 100);

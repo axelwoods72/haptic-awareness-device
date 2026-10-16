@@ -12,13 +12,14 @@
 #include "imu_driver.h"
 #include "mic_driver.h"
 #include "portmacro.h"
-#include <stdbool.h>
 #include <math.h>
-#include <stdio.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #define IMU_LOOP_PERIOD_MS 10    // 100 Hz
 #define N_LOOPS_PER_MAG_UPDATE 2 // update every 2nd loop - 50Hz
+#define ZERO_IMUS_AFTER_LOOPS 100
 #define SOUND_HOLD_MS 250
 #define HAPTIC_STRENGTH 0.4f
 #define HAPTIC_LOOP_PERIOD_MS 10
@@ -35,9 +36,7 @@ void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
 static QueueHandle_t theta_queue;
 static QueueHandle_t haptic_queue;
 static void haptic_task(void *pv);
-static uint32_t now_ms(void) {
-  return (uint32_t)(esp_timer_get_time() / 1000);
-}
+static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 /* ================================================================== */
 /* Main                                                               */
@@ -45,8 +44,8 @@ static uint32_t now_ms(void) {
 
 void app_main(void) {
   /* Set all motor outputs LOW before waiting for sensors. */
-  const haptic_config_t motor_cfg = {
-      .ia = {HAPTIC_FRONT_PIN, HAPTIC_RIGHT_PIN, HAPTIC_BACK_PIN, HAPTIC_LEFT_PIN}};
+  const haptic_config_t motor_cfg = {.ia = {HAPTIC_FRONT_PIN, HAPTIC_RIGHT_PIN,
+                                            HAPTIC_BACK_PIN, HAPTIC_LEFT_PIN}};
   ESP_ERROR_CHECK(haptic_init(&motor_cfg));
   vTaskDelay(pdMS_TO_TICKS(2000));
 
@@ -83,25 +82,27 @@ void app_main(void) {
   if (haptic_queue == NULL) {
     ESP_LOGE(TAG, "Failed to create haptic queue");
     vQueueDelete(theta_queue);
-    return;  // outputs remain LOW
+    return; // outputs remain LOW
   }
   /* Only this task writes PWM after init. It expires stale commands even
    * while the sensor loop is waiting for I2C. */
-  if (xTaskCreatePinnedToCore(haptic_task, "haptic_task", 4096, NULL, 4,
-                              NULL, 0) != pdPASS) {
+  if (xTaskCreatePinnedToCore(haptic_task, "haptic_task", 4096, NULL, 4, NULL,
+                              0) != pdPASS) {
     ESP_LOGE(TAG, "Failed to create haptic task");
     vQueueDelete(haptic_queue);
     vQueueDelete(theta_queue);
     return;
   }
-  if (xTaskCreatePinnedToCore(mic_task, "mic_task", 16384, NULL, 5,
-                              NULL, 1) != pdPASS) {
+  if (xTaskCreatePinnedToCore(mic_task, "mic_task", 16384, NULL, 5, NULL, 1) !=
+      pdPASS) {
     ESP_LOGE(TAG, "Failed to create mic task");
-    return;  // haptic task has no active command and stays stopped
+    return; // haptic task has no active command and stays stopped
   }
 
   orientation_data_t head_orient = {0}, body_orient = {0};
   uint32_t loop_cnt = 0;
+  float head_yaw0 = 0.0f, body_yaw0 = 0.0f;
+  bool imus_zeroed = false;
 
   TickType_t last_wake_time = xTaskGetTickCount();
   const TickType_t period_ticks = pdMS_TO_TICKS(IMU_LOOP_PERIOD_MS);
@@ -116,26 +117,39 @@ void app_main(void) {
     imu_update("body", &imu_body, &f_body, &body_orient, do_mag);
     loop_cnt++;
 
-    float axels_theta = wrap_angle(head_orient.yaw - body_orient.yaw);
+    // Capture the startup heading once, after the filters have settled
+    if (!imus_zeroed && loop_cnt >= ZERO_IMUS_AFTER_LOOPS &&
+        f_head.yaw_initialized && f_body.yaw_initialized) {
+      head_yaw0 = head_orient.yaw;
+      body_yaw0 = body_orient.yaw;
+      imus_zeroed = true;
+      ESP_LOGI(TAG, "IMUs zeroed (head %.1f, body %.1f)", head_yaw0, body_yaw0);
+    }
+    float head_yaw = wrap_angle(head_orient.yaw - head_yaw0);
+    float body_yaw = wrap_angle(body_orient.yaw - body_yaw0);
+
+    float axels_theta = wrap_angle(head_yaw - body_yaw);
 
     // visualize_imu.py greps this from serial
     printf("ORIENT,%.2f,%.2f,%.2f\n", head_orient.roll, head_orient.pitch,
-           head_orient.yaw);
+           head_yaw);
     printf("NECK,%.2f\n", axels_theta);
     /* ---------------- */
 
     if (xQueueReceive(theta_queue, &mic_output, 0) == pdTRUE)
       have_sound_sample = true;
-    bool sound_active = have_sound_sample &&
+    bool sound_active =
+        have_sound_sample &&
         (TickType_t)(xTaskGetTickCount() - mic_output.last_heard) <
-        pdMS_TO_TICKS(SOUND_HOLD_MS);
-    if (!sound_active) have_sound_sample = false;
+            pdMS_TO_TICKS(SOUND_HOLD_MS);
+    if (!sound_active)
+      have_sound_sample = false;
 
     haptic_command_t command = {.updated_at_ms = now_ms()};
-    if (sound_active) {
+    if (sound_active && imus_zeroed) {
       float sams_theta;
-      if (haptic_body_angle(mic_output.theta, head_orient.yaw,
-                            body_orient.yaw, &sams_theta) == ESP_OK) {
+      if (haptic_body_angle(mic_output.theta, head_yaw, body_yaw,
+                            &sams_theta) == ESP_OK) {
         command.theta_deg = sams_theta;
         command.strength = HAPTIC_STRENGTH;
         command.active = true;
@@ -163,10 +177,11 @@ static void haptic_task(void *pv) {
     xQueueReceive(haptic_queue, &latest, 0);
     uint32_t now = now_ms();
     if ((uint32_t)(now - latest.updated_at_ms) >= HAPTIC_COMMAND_TIMEOUT_MS)
-      latest.active = false;  // latch expiry until a new command arrives
+      latest.active = false; // latch expiry until a new command arrives
     esp_err_t err = haptic_apply_command(&latest, now);
     if (err != ESP_OK) {
-      /* Invalid inputs and write failures already stop all configured motors. */
+      /* Invalid inputs and write failures already stop all configured motors.
+       */
       ESP_LOGE(TAG, "Haptic output failed: %s", esp_err_to_name(err));
     }
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(HAPTIC_LOOP_PERIOD_MS));
@@ -252,7 +267,8 @@ void mic_task(void *pv) {
 
     // ignore background noise
     if (!has_signal) {
-      if (quiet_frames < QUIET_RESET_FRAMES) quiet_frames++;
+      if (quiet_frames < QUIET_RESET_FRAMES)
+        quiet_frames++;
       continue;
     }
 
