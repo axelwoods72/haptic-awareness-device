@@ -11,7 +11,6 @@
 
 #define OUTPUT_DATA_RATE 50 // in Hz (max = 150)
 
-// MMC5603 registers
 #define MMC5603_REG_XOUT0 0x00
 #define MMC5603_REG_ODR 0x1A
 #define MMC5603_REG_CTRL0 0x1B
@@ -58,7 +57,7 @@ esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
 
   // Reset MPU6050 - it stays powered across ESP32 resets, so clear any
   // state left over from a previous run
-  uint8_t reset_cmd[2] = {0x6B, 0x80}; // PWR_MGMT_1: DEVICE_RESET
+  uint8_t reset_cmd[2] = {0x6B, 0x80};
   err = i2c_master_transmit(imu_handle->mpu6050_handle, reset_cmd,
                             sizeof(reset_cmd), 100);
   if (err != ESP_OK)
@@ -66,7 +65,6 @@ esp_err_t imu_driver_setup(imu_handle_t *imu_handle,
   vTaskDelay(pdMS_TO_TICKS(100)); // wait for reset to complete
 
   // Wake up MPU6050 - it powers on in sleep mode.
-  // Write 0x00 to PWR_MGMT_1 (register 0x6B) to clear the SLEEP bit.
   uint8_t wake_cmd[2] = {0x6B, 0x00};
   err = i2c_master_transmit(imu_handle->mpu6050_handle, wake_cmd,
                             sizeof(wake_cmd), 100);

@@ -1,7 +1,5 @@
 #pragma once
 #include "imu_driver.h"
-#include <stdbool.h>
-#include <stdint.h>
 
 typedef struct {
   float pitch;
@@ -21,4 +19,4 @@ void complementary_filter_update_gyro(comp_filter_t *f, const imu_data_t *imu,
                                       orientation_data_t *out);
 void complementary_filter_update_mag(comp_filter_t *f, const imu_data_t *imu,
                                      orientation_data_t *out);
-float wrap_angle(float diff); // exposed so main can wrap neck yaw
+float wrap_angle(float diff);

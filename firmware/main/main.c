@@ -29,7 +29,7 @@ static imu_handle_t imu_head, imu_body;
 static comp_filter_t f_head, f_body;
 
 void mic_task(void *pv);
-bool imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
+void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
                 orientation_data_t *orient, bool do_mag);
 
 static QueueHandle_t theta_queue;
@@ -112,8 +112,8 @@ void app_main(void) {
   while (1) {
     /* ---- IMU ---- */
     bool do_mag = (loop_cnt % N_LOOPS_PER_MAG_UPDATE == 0);
-    bool head_ok = imu_update("head", &imu_head, &f_head, &head_orient, do_mag);
-    bool body_ok = imu_update("body", &imu_body, &f_body, &body_orient, do_mag);
+    imu_update("head", &imu_head, &f_head, &head_orient, do_mag);
+    imu_update("body", &imu_body, &f_body, &body_orient, do_mag);
     loop_cnt++;
 
     float axels_theta = wrap_angle(head_orient.yaw - body_orient.yaw);
@@ -132,7 +132,7 @@ void app_main(void) {
     if (!sound_active) have_sound_sample = false;
 
     haptic_command_t command = {.updated_at_ms = now_ms()};
-    if (sound_active && head_ok && body_ok) {
+    if (sound_active) {
       float sams_theta;
       if (haptic_body_angle(mic_output.theta, head_orient.yaw,
                             body_orient.yaw, &sams_theta) == ESP_OK) {
@@ -338,13 +338,13 @@ void mic_task(void *pv) {
   }
 }
 
-bool imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
+void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
                 orientation_data_t *orient, bool do_mag) {
   imu_data_t data;
   esp_err_t err = imu_driver_read_accel_gyro(imu, &data);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "%s accel/gyro read failed: %s", name, esp_err_to_name(err));
-    return false;
+    return;
   }
   complementary_filter_update_gyro(f, &data, orient);
 
@@ -352,14 +352,8 @@ bool imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
     err = imu_driver_read_mag(imu, &data);
     if (err != ESP_OK) {
       ESP_LOGE(TAG, "%s mag read failed: %s", name, esp_err_to_name(err));
-      f->yaw_initialized = false;  // require a good heading before re-enabling
-      return false;
+      return;
     }
     complementary_filter_update_mag(f, &data, orient);
   }
-  if (!isfinite(orient->yaw) || !isfinite(orient->roll) || !isfinite(orient->pitch)) {
-    complementary_filter_init(f);
-    return false;
-  }
-  return f->yaw_initialized;
 }
