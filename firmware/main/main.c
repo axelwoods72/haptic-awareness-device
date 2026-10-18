@@ -24,31 +24,44 @@
 #define HAPTIC_STRENGTH 0.4f
 #define HAPTIC_LOOP_PERIOD_MS 10
 
+// set to 0 to build without that hardware, e.g. to test the mic array alone
+#define ENABLE_IMU 0
+#define ENABLE_HAPTICS 0
+
 static const char *TAG = "main";
 
+#if ENABLE_IMU
 static imu_handle_t imu_head, imu_body;
 static comp_filter_t f_head, f_body;
+#endif
 
 void mic_task(void *pv);
+#if ENABLE_IMU
 void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
                 orientation_data_t *orient, bool do_mag);
+#endif
 
 static QueueHandle_t theta_queue;
+#if ENABLE_HAPTICS
 static QueueHandle_t haptic_queue;
 static void haptic_task(void *pv);
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+#endif
 
 /* ================================================================== */
 /* Main                                                               */
 /* ================================================================== */
 
 void app_main(void) {
+#if ENABLE_HAPTICS
   /* Set all motor outputs LOW before waiting for sensors. */
   const haptic_config_t motor_cfg = {.ia = {HAPTIC_FRONT_PIN, HAPTIC_RIGHT_PIN,
                                             HAPTIC_BACK_PIN, HAPTIC_LEFT_PIN}};
   ESP_ERROR_CHECK(haptic_init(&motor_cfg));
+#endif
   vTaskDelay(pdMS_TO_TICKS(2000));
 
+#if ENABLE_IMU
   /* ---- IMU setup ---- */
   const imu_config_t head_cfg = {.port = I2C_NUM_0,
                                  .sda_pin = IMU_HEAD_SDA_PIN,
@@ -70,6 +83,7 @@ void app_main(void) {
   complementary_filter_init(&f_head);
   complementary_filter_init(&f_body);
   /* --------------------- */
+#endif
 
   // queue length of 1
   theta_queue = xQueueCreate(1, sizeof(mic_output_t));
@@ -78,6 +92,7 @@ void app_main(void) {
     return;
   }
 
+#if ENABLE_HAPTICS
   haptic_queue = xQueueCreate(1, sizeof(haptic_command_t));
   if (haptic_queue == NULL) {
     ESP_LOGE(TAG, "Failed to create haptic queue");
@@ -93,16 +108,23 @@ void app_main(void) {
     vQueueDelete(theta_queue);
     return;
   }
+#endif
   if (xTaskCreatePinnedToCore(mic_task, "mic_task", 16384, NULL, 5, NULL, 1) !=
       pdPASS) {
     ESP_LOGE(TAG, "Failed to create mic task");
     return; // haptic task has no active command and stays stopped
   }
 
+  // with the IMUs disabled, the belt angle is just the mic angle
+  float head_yaw = 0.0f, body_yaw = 0.0f;
+#if ENABLE_IMU
   orientation_data_t head_orient = {0}, body_orient = {0};
   uint32_t loop_cnt = 0;
   float head_yaw0 = 0.0f, body_yaw0 = 0.0f;
   bool imus_zeroed = false;
+#else
+  bool imus_zeroed = true;
+#endif
 
   TickType_t last_wake_time = xTaskGetTickCount();
   const TickType_t period_ticks = pdMS_TO_TICKS(IMU_LOOP_PERIOD_MS);
@@ -111,6 +133,7 @@ void app_main(void) {
 
   /* ---- loop ---- */
   while (1) {
+#if ENABLE_IMU
     /* ---- IMU ---- */
     bool do_mag = (loop_cnt % N_LOOPS_PER_MAG_UPDATE == 0);
     imu_update("head", &imu_head, &f_head, &head_orient, do_mag);
@@ -125,8 +148,8 @@ void app_main(void) {
       imus_zeroed = true;
       ESP_LOGI(TAG, "IMUs zeroed (head %.1f, body %.1f)", head_yaw0, body_yaw0);
     }
-    float head_yaw = wrap_angle(head_orient.yaw - head_yaw0);
-    float body_yaw = wrap_angle(body_orient.yaw - body_yaw0);
+    head_yaw = wrap_angle(head_orient.yaw - head_yaw0);
+    body_yaw = wrap_angle(body_orient.yaw - body_yaw0);
 
     float axels_theta = wrap_angle(head_yaw - body_yaw);
 
@@ -137,6 +160,7 @@ void app_main(void) {
            body_yaw);
     printf("NECK,%.2f\n", axels_theta);
     /* ---------------- */
+#endif
 
     if (xQueueReceive(theta_queue, &mic_output, 0) == pdTRUE)
       have_sound_sample = true;
@@ -147,21 +171,27 @@ void app_main(void) {
     if (!sound_active)
       have_sound_sample = false;
 
+#if ENABLE_HAPTICS
     haptic_command_t command = {.updated_at_ms = now_ms()};
+#endif
     if (sound_active && imus_zeroed) {
       float sams_theta;
       if (haptic_body_angle(mic_output.theta, head_yaw, body_yaw,
                             &sams_theta) == ESP_OK) {
+#if ENABLE_HAPTICS
         command.theta_deg = sams_theta;
         command.strength = HAPTIC_STRENGTH;
         command.active = true;
+#endif
         /* Preserve the mic visualiser's log and expose the corrected angle. */
         ESP_LOGI(TAG, "Theta: %f", mic_output.theta);
         ESP_LOGD(TAG, "Belt theta: %.2f", sams_theta);
       }
     }
+#if ENABLE_HAPTICS
     /* Disabled commands stop every channel; no blocking one-second demo. */
     xQueueOverwrite(haptic_queue, &command);
+#endif
 
     vTaskDelayUntil(&last_wake_time, period_ticks);
   }
@@ -171,6 +201,7 @@ void app_main(void) {
 /* Helper functions                                                   */
 /* ================================================================== */
 
+#if ENABLE_HAPTICS
 static void haptic_task(void *pv) {
   (void)pv;
   haptic_command_t latest = {0};
@@ -189,12 +220,13 @@ static void haptic_task(void *pv) {
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(HAPTIC_LOOP_PERIOD_MS));
   }
 }
+#endif
 
 void mic_task(void *pv) {
   (void)pv;
   esp_err_t err = mic_driver_init();
   ESP_ERROR_CHECK(err);
-  ESP_LOGI(TAG, "mic_driver initialised, threshold=%d", AMP_THRES);
+  ESP_LOGI(TAG, "mic_driver initialised");
 
   // once-per-second status
   const int frames_per_sec = MIC_SAMPLE_RATE / MIC_FRAME_SAMPLES;
@@ -208,6 +240,8 @@ void mic_task(void *pv) {
 
   // for ensuring theta is accurate at beginning of new sound event
   int theta_fresh = 1;
+
+  float background_vol = 10000;
 
   while (1) {
     int32_t buf0[MIC_FRAME_SAMPLES], buf1[MIC_FRAME_SAMPLES],
@@ -253,22 +287,29 @@ void mic_task(void *pv) {
         peak_max[m] = peak[m];
     }
 
+    float amp_thres = AMP_THRES_MULT * background_vol;
     int has_signal =
-        peak[0] > AMP_THRES && peak[1] > AMP_THRES && peak[2] > AMP_THRES;
+        peak[0] > amp_thres && peak[1] > amp_thres && peak[2] > amp_thres;
     accepted_count += has_signal;
 
     if (++frame_count >= frames_per_sec) {
-      ESP_LOGI(TAG,
-               "status: %d/%d frames above threshold, peak mic0=%.0f mic1=%.0f "
-               "mic2=%.0f",
-               accepted_count, frame_count, peak_max[0], peak_max[1],
-               peak_max[2]);
+      // DEBUG LOGS
+      // ESP_LOGI(TAG,
+      //          "status: %d/%d frames above threshold, peak mic0=%.0f mic1=%.0f "
+      //          "mic2=%.0f",
+      //          accepted_count, frame_count, peak_max[0], peak_max[1],
+      //          peak_max[2]);
       frame_count = accepted_count = 0;
       peak_max[0] = peak_max[1] = peak_max[2] = 0.0f;
     }
 
     // ignore background noise
     if (!has_signal) {
+      // adjust background_vol
+      float new_back_vol = (1 - AMP_THRES_ALPHA) * background_vol + AMP_THRES_ALPHA * avg_buffers(clean0, clean1, clean2);
+      if (new_back_vol >= MIN_BACK_VOL) 
+        background_vol = new_back_vol;
+
       if (quiet_frames < QUIET_RESET_FRAMES)
         quiet_frames++;
       continue;
@@ -284,10 +325,15 @@ void mic_task(void *pv) {
 
 #if USE_SRP_PHAT
     float score;
-    float rad = srp_phat(clean0, clean1, clean2, &score);
+    float peak_ratio;
+    float rad = srp_phat(clean0, clean1, clean2, &score, &peak_ratio);
 
-    ESP_LOGI(TAG, "srp theta: %.1f, score: %.3g", rad * 180.0f / (float)PI,
-             score);
+    ESP_LOGI(TAG, "srp theta: %.1f, score: %.3g, peak ratio: %.2f",
+             rad * 180.0f / (float)PI, score, peak_ratio);
+
+    // reject frames reading if another sound is similarly confident or low confidence in general
+    if (peak_ratio < SRP_PEAK_RATIO_MIN || score < SRP_CUTOFF)
+      continue;
 #else
     // GCC-PHAT TDOA
     float tau[3];
@@ -318,6 +364,7 @@ void mic_task(void *pv) {
     mic_out.last_heard = xTaskGetTickCount();
     xQueueOverwrite(theta_queue, &mic_out);
 
+    /* FOR DEBUG
     int32_t min0 = INT32_MAX, max0 = INT32_MIN;
     int64_t sum0 = 0;
     int32_t min1 = INT32_MAX, max1 = INT32_MIN;
@@ -353,9 +400,11 @@ void mic_task(void *pv) {
              sum1 / MIC_FRAME_SAMPLES);
     ESP_LOGI(TAG, "mic2: min=%ld max=%ld mean=%lld", (long)min2, (long)max2,
              sum2 / MIC_FRAME_SAMPLES);
+    */
   }
 }
 
+#if ENABLE_IMU
 void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
                 orientation_data_t *orient, bool do_mag) {
   imu_data_t data;
@@ -375,3 +424,4 @@ void imu_update(const char *name, imu_handle_t *imu, comp_filter_t *f,
     complementary_filter_update_mag(f, &data, orient);
   }
 }
+#endif

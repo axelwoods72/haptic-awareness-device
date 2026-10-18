@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include <stdlib.h>
 #include "mic_driver.h"
 #include "gpio.h"
 #include "esp_dsp.h"
@@ -161,6 +162,7 @@ esp_err_t mic_driver_init() {
     float det = S_aa * S_bb - S_ab * S_ab;
     inv_det = 1.0f / det;
 
+    // pre-computed lags between mic pairs for each SRP angle
     // tau = a*sin(theta) + b*cos(theta)
     for (int a = 0; a < SRP_N_ANGLES; a++) {
         float th = a * SRP_STEP_DEG * (float) PI / 180.0f;
@@ -208,11 +210,6 @@ float frame_peak(const float* clean) {
         }
     }
     return peak / 256.0f;
-}
-
-// return 1 if the frame's buffer amplitude reaches threshold
-int frame_has_signal(const float* clean) {
-    return frame_peak(clean) > AMP_THRES;
 }
 
 void ifft(float* G) {
@@ -268,7 +265,7 @@ void hpf(int32_t *buf, int chan_i, float *out) {
 // PHAT-normalised copy of an averaged cross-spectrum bin
 static void phat_bin(float* G, const float* avg, int i) {
     float re = avg[2 * i], im = avg[2 * i + 1];
-    float mag = powf(hypotf(re, im) + EPSILON, 0.75f);
+    float mag = powf(hypotf(re, im) + EPSILON, PHAT_WEIGHTING);
     G[2 * i] = re / mag;
     G[2 * i + 1] = im / mag;
 }
@@ -356,8 +353,31 @@ static float corr_interp(float* G, float lag) {
     return (1.0f - frac) * corr_at(G, l0) + frac * corr_at(G, l0 + 1);
 }
 
+// highest local maximum at least SRP_PEAK_SEP_DEG away from the best angle, -INFINITY if there is none
+static float srp_second_peak(const float* srp, int best) {
+    const int sep = SRP_PEAK_SEP_DEG / SRP_STEP_DEG;
+    float second = -INFINITY;
+    for (int a = 0; a < SRP_N_ANGLES; a++) {
+        int d = abs(a - best);
+        if (d > SRP_N_ANGLES / 2) {
+            d = SRP_N_ANGLES - d; // angular distance wraps at 360
+        }
+        if (d < sep) {
+            continue;
+        }
+        // only real peaks, not the shoulders of the main peak
+        float prev = srp[(a - 1 + SRP_N_ANGLES) % SRP_N_ANGLES];
+        float next = srp[(a + 1) % SRP_N_ANGLES];
+        if (srp[a] >= prev && srp[a] >= next && srp[a] > second) {
+            second = srp[a];
+        }
+    }
+    return second;
+}
+
 // steered response power: score every candidate angle by summing all pairs' correlation at the lags that angle predicts
-float srp_phat(float* clean0, float* clean1, float* clean2, float* score) {
+// peak_ratio is best / second best peak, large when one direction clearly dominates
+float srp_phat(float* clean0, float* clean1, float* clean2, float* score, float* peak_ratio) {
     gcc_phat(clean0, clean1, clean2);
 
     float* G[N_MICS] = {G01, G02, G12};
@@ -382,6 +402,10 @@ float srp_phat(float* clean0, float* clean1, float* clean2, float* score) {
 
     *score = y1;
 
+    // a second peak at or below 0 has no correlation, so the best peak is unambiguous
+    float second = srp_second_peak(srp, best);
+    *peak_ratio = (second > EPSILON) ? y1 / second : INFINITY;
+
     float deg = ((float) best + offset) * SRP_STEP_DEG;
     if (deg > 180.0f) {
         deg -= 360.0f;
@@ -389,13 +413,14 @@ float srp_phat(float* clean0, float* clean1, float* clean2, float* score) {
     return deg * (float) PI / 180.0f;
 }
 
-void get_mic_positions (float pos[N_MICS][2]) {
-    pos[0][0] = MIC_RADIUS * sinf(0 * (PI / 180));
-    pos[0][1] = MIC_RADIUS * cosf(0 * (PI / 180));
-    pos[1][0] = MIC_RADIUS * sinf(-120 * (PI / 180));
-    pos[1][1] = MIC_RADIUS * cosf(-120 * (PI / 180));
-    pos[2][0] = MIC_RADIUS * sinf(120 * (PI / 180));
-    pos[2][1] = MIC_RADIUS * cosf(120 * (PI / 180));
+void get_mic_positions(float pos[N_MICS][2])
+{
+    pos[0][0] = MIC_RADIUS_FRONT * sinf(0 * (PI / 180));
+    pos[0][1] = MIC_RADIUS_FRONT * cosf(0 * (PI / 180));
+    pos[1][0] = MIC_RADIUS * sinf(-90 * (PI / 180));
+    pos[1][1] = MIC_RADIUS * cosf(-90 * (PI / 180));
+    pos[2][0] = MIC_RADIUS * sinf(90 * (PI / 180));
+    pos[2][1] = MIC_RADIUS * cosf(90 * (PI / 180));
 }
 
 // 0 rad is forward, negative to the left, positive to the right
@@ -410,4 +435,13 @@ float tau_to_angle(float* tau) {
     float uy = (S_bt * S_aa - S_at * S_ab) * inv_det;
 
     return atan2f(ux, uy);
+}
+
+// calculates average of all the readiongs, for adjusting amp_thres
+float avg_buffers(float buf0[], float buf1[], float buf2[]) {
+    float sum = 0;
+    for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
+        sum += fabsf(buf0[i]/256) + fabsf(buf1[i]/256) + fabsf(buf2[i]/256);
+    }
+    return sum / (MIC_FRAME_SAMPLES * 3);
 }
