@@ -200,7 +200,7 @@ esp_err_t mic_driver_read_mono(int32_t* out_buf, size_t* bytes_read) {
     return err;
 }
 
-// peak absolute amplitude of a filtered frame, in 24-bit counts
+// peak absolute amplitude of a filtered frame, shift 8 bits left to make 24-bit value
 float frame_peak(const float* clean) {
     float peak = 0.0f;
     for (int i = 0; i < MIC_FRAME_SAMPLES; i++) {
@@ -380,6 +380,7 @@ static float srp_second_peak(const float* srp, int best) {
 float srp_phat(float* clean0, float* clean1, float* clean2, float* score, float* peak_ratio) {
     gcc_phat(clean0, clean1, clean2);
 
+    // find which angle the mic delays agree with best
     float* G[N_MICS] = {G01, G02, G12};
     float srp[SRP_N_ANGLES];
     int best = 0;

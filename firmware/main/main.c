@@ -25,8 +25,8 @@
 #define HAPTIC_LOOP_PERIOD_MS 10
 
 // set to 0 to build without that hardware, e.g. to test the mic array alone
-#define ENABLE_IMU 0
-#define ENABLE_HAPTICS 0
+#define ENABLE_IMU 1
+#define ENABLE_HAPTICS 1
 
 static const char *TAG = "main";
 
@@ -231,10 +231,8 @@ void mic_task(void *pv) {
   // once-per-second status
   const int frames_per_sec = MIC_SAMPLE_RATE / MIC_FRAME_SAMPLES;
   int frame_count = 0, accepted_count = 0;
-  float peak_max[N_MICS] = {0};
 
-  // smoothed direction as a unit vector, so -179 and +179 average to 180 rather
-  // than 0
+  // smoothed direction as a unit vector, so -179 and +179 average to 180 rather than 0
   float sin_avg = 0.0f, cos_avg = 1.0f;
   int quiet_frames = QUIET_RESET_FRAMES;
 
@@ -282,10 +280,6 @@ void mic_task(void *pv) {
     // track loudest frame per mic for the status log
     float peak[N_MICS] = {frame_peak(clean0), frame_peak(clean1),
                           frame_peak(clean2)};
-    for (int m = 0; m < N_MICS; m++) {
-      if (peak[m] > peak_max[m])
-        peak_max[m] = peak[m];
-    }
 
     float amp_thres = AMP_THRES_MULT * background_vol;
     int has_signal =
@@ -293,25 +287,17 @@ void mic_task(void *pv) {
     accepted_count += has_signal;
 
     if (++frame_count >= frames_per_sec) {
-      // DEBUG LOGS
-      // ESP_LOGI(TAG,
-      //          "status: %d/%d frames above threshold, peak mic0=%.0f mic1=%.0f "
-      //          "mic2=%.0f",
-      //          accepted_count, frame_count, peak_max[0], peak_max[1],
-      //          peak_max[2]);
       frame_count = accepted_count = 0;
-      peak_max[0] = peak_max[1] = peak_max[2] = 0.0f;
     }
 
     // ignore background noise
     if (!has_signal) {
       // adjust background_vol
       float new_back_vol = (1 - AMP_THRES_ALPHA) * background_vol + AMP_THRES_ALPHA * avg_buffers(clean0, clean1, clean2);
-      if (new_back_vol >= MIN_BACK_VOL) 
-        background_vol = new_back_vol;
+      if (new_back_vol >= MIN_BACK_VOL) background_vol = new_back_vol;
 
-      if (quiet_frames < QUIET_RESET_FRAMES)
-        quiet_frames++;
+      if (quiet_frames < QUIET_RESET_FRAMES) quiet_frames++;
+
       continue;
     }
 
