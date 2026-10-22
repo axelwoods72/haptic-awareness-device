@@ -7,12 +7,11 @@ drawn while a sound is active; it disappears once no reading has arrived for
 --hold seconds.
 
 Sources (pick with --source):
-    smoothed  "Theta: <deg>"      app_main(), the averaged angle sent to the
-                                  haptics. Printed at 100 Hz while sound is
-                                  active, but only once the IMUs are zeroed.
+    smoothed  "Theta: <deg>"      mic_task, the averaged angle sent to the
+                                  haptics.
     raw       "srp theta: <deg>"  mic_task, the per-frame SRP-PHAT angle.
-                                  Printed for every frame above threshold,
-                                  independent of the IMUs.
+    Both are on the same "MIC ..." line, printed once per frame that passes
+    the threshold and SRP validity checks, independent of the IMUs.
 
 Angle convention matches srp_phat() / tau_to_angle() in mic_driver.c:
     range [-180, 180]

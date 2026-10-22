@@ -32,24 +32,12 @@ esp_err_t haptic_init(const haptic_config_t *config) {
     }
   }
 
-  // Configure the four GPIOs as outputs.
-  gpio_config_t gpio = {.mode = GPIO_MODE_OUTPUT};
-
-  for (int i = 0; i < HAPTIC_COUNT; ++i)
-    gpio.pin_bit_mask |= 1ULL << config->ia[i];
-
-  esp_err_t err = gpio_config(&gpio);
-  if (err != ESP_OK)
-    return err;
-
-  // Start with all outputs LOW.
-  for (int i = 0; i < HAPTIC_COUNT; ++i) {
-    err = gpio_set_level(config->ia[i], 0);
-    if (err != ESP_OK)
-      return err;
-  }
+  // No gpio_config() here: ledc_channel_config() claims each pin as an output
+  // itself, and configuring it beforehand makes LEDC warn "GPIO n is not usable".
+  // Channels start at duty 0, so all outputs are LOW from init.
 
   // Shared PWM timer: 20 kHz, 10-bit resolution.
+  esp_err_t err;
   ledc_timer_config_t timer = {.speed_mode = LEDC_LOW_SPEED_MODE,
                                .timer_num = LEDC_TIMER_0,
                                .duty_resolution = LEDC_TIMER_10_BIT,
