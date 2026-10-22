@@ -25,11 +25,12 @@ Setup:
     pip install pyserial matplotlib numpy
 
 Usage:
-    1. Set SERIAL_PORT below to match your board (check with `ls /dev/cu.*`).
+    1. Find your board's port with `ls /dev/cu.*` (S3-Zero: /dev/cu.usbmodem...).
     2. Flash + run the firmware so it's printing HEAD lines.
-    3. python visualize_imu.py
+    3. python visualize_imu.py -p /dev/cu.usbmodemXXXX
 """
 
+import argparse
 import re
 import threading
 import time
@@ -43,7 +44,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 # --- Configuration -----------------------------------------------------
 
-SERIAL_PORT = "/dev/cu.usbserial-0001"  # <-- change this to your board's port
+SERIAL_PORT = "/dev/cu.usbmodem101"  # <-- change this to your board's port
 BAUD_RATE = 115200
 HISTORY_SECONDS = 10  # how much time-series history to keep and show
 
@@ -61,15 +62,19 @@ start_time = time.monotonic()
 history = deque()
 
 
-def serial_reader():
+def serial_reader(port):
     """Continuously reads serial lines and updates `latest` and `history`.
 
     Runs on its own thread so the matplotlib animation loop never blocks
     waiting on serial data - it just reads whatever `latest`/`history`
     holds each time it redraws.
     """
-    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    print(f"Connected to {SERIAL_PORT} at {BAUD_RATE} baud. Reading...")
+    try:
+        ser = serial.Serial(port, BAUD_RATE, timeout=1)
+    except serial.SerialException as e:
+        print(f"Could not open {port}: {e}\nCheck the port with `ls /dev/cu.*` and pass it with -p.")
+        return
+    print(f"Connected to {port} at {BAUD_RATE} baud. Reading...")
     while True:
         try:
             raw = ser.readline()
@@ -142,9 +147,12 @@ def rotation_matrix(roll_deg, pitch_deg, yaw_deg):
 
 # --- Plotting --------------------------------------------------------------
 
-fig = plt.figure(figsize=(11, 5))
-ax_box = fig.add_subplot(121, projection="3d")
-ax_hist = fig.add_subplot(122)
+fig = plt.figure(figsize=(12, 5))
+# wspace = gap between the 3D box and the time-series plot
+grid = fig.add_gridspec(1, 2, width_ratios=[1, 1.2], wspace=0.35,
+                        left=0.02, right=0.97, top=0.9, bottom=0.12)
+ax_box = fig.add_subplot(grid[0, 0], projection="3d")
+ax_hist = fig.add_subplot(grid[0, 1])
 
 
 def update(frame):
@@ -197,10 +205,13 @@ def update(frame):
     ax_hist.legend(loc="upper right")
     ax_hist.grid(True, alpha=0.3)
 
-    fig.tight_layout()
 
 
 if __name__ == "__main__":
-    threading.Thread(target=serial_reader, daemon=True).start()
-    ani = FuncAnimation(fig, update, interval=50)
+    parser = argparse.ArgumentParser(description="Head IMU orientation viewer")
+    parser.add_argument("-p", "--port", default=SERIAL_PORT)
+    args = parser.parse_args()
+
+    threading.Thread(target=serial_reader, args=(args.port,), daemon=True).start()
+    ani = FuncAnimation(fig, update, interval=50, cache_frame_data=False)
     plt.show()

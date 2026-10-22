@@ -40,7 +40,7 @@ from matplotlib.patches import Wedge
 
 # --- Configuration -----------------------------------------------------
 
-SERIAL_PORT = "/dev/cu.usbserial-0001"  # <-- change to your board's port (ls /dev/cu.*)
+SERIAL_PORT = "/dev/cu.usbmodem101"  # <-- change to your board's port (ls /dev/cu.*)
 BAUD_RATE = 115200
 HISTORY_SECONDS = 15  # time-series window
 
